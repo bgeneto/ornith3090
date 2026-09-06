@@ -928,6 +928,14 @@ Things that each cost us hours, in rough order of pain. Worth skimming before yo
       tokens/step). `SPEC_ATTN=0` frees about a gigabyte of graph capture
       (1.32 against 0.33 GiB, the same on a 3090), which on this host is the
       difference between fitting and not; on bare metal the room absorbs it.
+    - **Pin cards with `CUDA_VISIBLE_DEVICES`, not `--gpus device=N`.** On this
+      Docker Desktop host the device request is recorded (`docker inspect`
+      shows `"DeviceIDs":["1"]`) and not enforced: a container started with
+      `--gpus '"device=1"'` enumerated both cards and its CUDA device 0 was
+      host GPU 0. `-e NVIDIA_VISIBLE_DEVICES=<uuid> -e CUDA_VISIBLE_DEVICES=<uuid>`
+      pinned it, verified in-process before any GPU work. Everything above was
+      run with the variable set, and the adapter counters put each run on the
+      card it named.
 
     Measured in the
     [#25](https://github.com/syv-ai/qwen38-27b-rtx3090/issues/25) comments of
