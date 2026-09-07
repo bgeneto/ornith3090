@@ -946,7 +946,11 @@ Things that each cost us hours, in rough order of pain. Worth skimming before yo
     `dflash2-z-adaptive-emitted.patch`, is invisible on a short single-prompt cell and only
     shows on a cohort; and `VLLM_DFLASH2_LOOKUP_CHEAP_CTX` (default 0, so the branch is dead)
     takes the long block unconditionally below a context threshold and would invalidate any
-    bisect run across it.
+    bisect run across it. The same split shows in any production log without
+    instrumentation: at width 15 the engine's own per-position acceptance line reads seven
+    positions in the 0.79-0.96 band and a flat eight-position tail near 0.15 (0.958, 0.921,
+    0.899, 0.862, 0.845, 0.820, 0.793, then 0.155 x 6, 0.153, 0.148 -- reference 3090 under
+    real traffic).
 
 57. **Two passes with a fixed seed are two replays, and a short single-prompt cell cannot see a
     cohort-scale effect at any number of seeds.** The engine seeds from zero and the noise draw
