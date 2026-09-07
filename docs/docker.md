@@ -17,7 +17,7 @@ configured as a runtime. The 250 W power limit is a host setting
 git clone https://github.com/syv-ai/qwen38-27b-rtx3090 && cd qwen38-27b-rtx3090
 cp .env.example .env                              # all knobs live in .env (gitignored)
 # PowerShell: Copy-Item .env.example .env
-# Set VLLM_API_KEY in .env before exposing the server beyond this machine.
+echo "VLLM_API_KEY=$(openssl rand -hex 24)" >> .env   # skip only if the port stays on this machine
 docker compose --profile single up -d               # or --profile batch
 docker compose logs -f single
 ```
