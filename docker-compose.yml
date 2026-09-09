@@ -7,7 +7,8 @@
 #
 # Knobs go in a .env file next to this file: VLLM_API_KEY=...,
 # and any of the start-script variables (CTX, KV, MAX_LEN, MAX_SEQS, GPU_UTIL,
-# DRAFT_TOKENS, EXTRA_ARGS, ...) — .env is passed straight into the container.
+# DRAFT_TOKENS, SERVED_MODEL_NAME, EXTRA_ARGS, ...) — .env is passed straight
+# into the container.
 #
 # PORT, MODELS_DIR, and NVIDIA_GPU are read here: models live in ./models by
 # default (the same layout as the venv install, so both can share one download).

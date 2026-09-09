@@ -28,6 +28,7 @@ if [ "${VLLM_OFFLOAD_KEEP_SHM:-0}" != 1 ]; then
 fi
 
 MODEL=${MODEL:-$REPO/models/Ornith-1.5-9B-MixedInt4-AutoRound}
+SERVED_MODEL_NAME=${SERVED_MODEL_NAME:-ornith-1.5-9b}
 PORT=${PORT:-18020}
 HOST=${HOST:-0.0.0.0}
 MAX_SEQS=${MAX_SEQS:-64}
@@ -93,6 +94,7 @@ export PATH="$REPO/venv/bin:$PATH"
 
 echo "=== Starting Ornith-1.5-9B batch server ==="
 echo "Model:        $MODEL"
+echo "Served as:    $SERVED_MODEL_NAME"
 echo "Port:         $PORT"
 echo "Max Seqs:     $MAX_SEQS"
 echo "Context:      $MAX_LEN"
@@ -100,7 +102,7 @@ echo "KV Cache:     $KV"
 echo "=========================================="
 
 exec venv/bin/vllm serve "$MODEL" \
-  --served-model-name ornith-1.5-9b \
+  --served-model-name "$SERVED_MODEL_NAME" \
   --host "$HOST" --port "$PORT" \
   --trust-remote-code \
   --gpu-memory-utilization "$GPU_UTIL" \

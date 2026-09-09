@@ -40,6 +40,7 @@ if [ "${VLLM_OFFLOAD_KEEP_SHM:-0}" != 1 ]; then
 fi
 
 MODEL=${MODEL:-$REPO/models/Ornith-1.5-9B-MixedInt4-AutoRound}
+SERVED_MODEL_NAME=${SERVED_MODEL_NAME:-ornith-1.5-9b}
 PORT=${PORT:-18020}
 HOST=${HOST:-0.0.0.0}
 GPU_UTIL=${GPU_UTIL:-0.95}
@@ -134,6 +135,7 @@ export PATH="$REPO/venv/bin:$PATH"
 
 echo "=== Starting Ornith-1.5-9B single-user server ==="
 echo "Model:        $MODEL"
+echo "Served as:    $SERVED_MODEL_NAME"
 echo "Port:         $PORT"
 echo "Context:      $MAX_LEN tokens (mode: $CTX)"
 echo "Speculation:  $SPEC (draft tokens: $DRAFT_TOKENS)"
@@ -142,7 +144,7 @@ echo "GPU util:     $GPU_UTIL"
 echo "==============================================="
 
 exec venv/bin/vllm serve "$MODEL" \
-  --served-model-name ornith-1.5-9b \
+  --served-model-name "$SERVED_MODEL_NAME" \
   --host "$HOST" --port "$PORT" \
   --trust-remote-code \
   --gpu-memory-utilization "$GPU_UTIL" \
