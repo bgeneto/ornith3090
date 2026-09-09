@@ -1,0 +1,8 @@
+#!/bin/sh
+# Container helper: Ubuntu has no system pip. Prefer /app/venv (serving).
+# DFlash2 training uses /cache/venv-dflash2 — see docker/install_dflash2_train.sh.
+if [ -x /app/venv/bin/python ]; then
+  exec /app/venv/bin/python -m pip "$@"
+fi
+echo "no /app/venv/bin/python — this wrapper is for the Ornith container" >&2
+exit 1

@@ -55,8 +55,9 @@ if [ "$DRY" = 1 ]; then
   exit 0
 fi
 if ! "$PYTHON" -c "import speculators" 2>/dev/null; then
-  echo "speculators is not installed. Prefer: bash drafter/train_dflash2.sh" >&2
-  echo "  pip install speculators" >&2
+  echo "speculators is not installed. Prefer: bash drafter/train_dflash2.sh --smoke" >&2
+  echo "  $PYTHON -m pip install speculators   # still not into a serving-only constraint" >&2
+  echo "There is no system pip in the Docker image; source docker/env.sh first." >&2
   exit 1
 fi
 exec "${CMD[@]}"

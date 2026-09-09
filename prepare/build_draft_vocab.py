@@ -107,21 +107,36 @@ else:
     print(f"final draft vocab with special tokens: {len(ids)} ids")
 
 
-def _align_pack(ids, pack, vocab_size):
-    """AutoGPTQ qzeros are packed along the vocab dim (pack = 32/bits)."""
+def _lcm(a, b):
+    x, y = int(a), int(b)
+    while y:
+        x, y = y, x % y
+    return int(a) * int(b) // x
+
+
+def _align_pack(ids, pack, vocab_size, pad_to=64):
+    """Align the draft vocab to GPTQ packing and vLLM ParallelLMHead padding.
+
+    AutoGPTQ qzeros pack along the vocab dim (pack = 32/bits). vLLM pads
+    ParallelLMHead to DEFAULT_VOCAB_PADDING_SIZE (64), but GPTQ qweight stores
+    vocab on dim 1 while the embedding weight_loader only pads dim 0. A length
+    of 40968 therefore becomes an allocated 41024-wide Marlin N and crashes
+    at load. Align to lcm(pack, 64) so checkpoint and head agree.
+    """
+    align = _lcm(pack, pad_to) if pad_to else pack
     have = set(ids)
     t = 0
-    while len(have) % pack:
+    while len(have) % align:
         if t not in have and t < vocab_size:
             have.add(t)
         t += 1
-        if t > vocab_size + pack:
+        if t > vocab_size + align:
             break
     out = sorted(have)
     if len(out) != len(ids):
-        print(f"padded draft vocab {len(ids)} -> {len(out)} ids (GPTQ pack={pack})")
-    if len(out) % pack:
-        raise SystemExit(f"draft vocab {len(out)} still not aligned to pack={pack}")
+        print(f"padded draft vocab {len(ids)} -> {len(out)} ids (align={align})")
+    if len(out) % align:
+        raise SystemExit(f"draft vocab {len(out)} still not aligned to {align}")
     return out
 
 
@@ -176,6 +191,8 @@ else:
         wp = f.get_tensor("lm_head.weight_packed")   # [vocab, K/8] int32
         ws = f.get_tensor("lm_head.weight_scale")    # [vocab, K/group]
         shape = f.get_tensor("lm_head.weight_shape")
+    ids = _align_pack(ids, pack=1, vocab_size=int(wp.shape[0]))
+    ids_t = torch.tensor(ids, dtype=torch.int64)
     sub_p = wp.index_select(0, ids_t).contiguous()
     sub_s = ws.index_select(0, ids_t).contiguous()
     sub_shape = torch.tensor([len(ids), int(shape[1])], dtype=torch.int64)

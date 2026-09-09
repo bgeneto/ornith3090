@@ -1,0 +1,29 @@
+# NeMo AutoModel stack for TrainDFlash2Recipe. Installed into /cache/venv-dflash2
+# (or repo venv-dflash2), NOT into the serving venv: nemo-automodel pins
+# transformers==5.8.1, which would break vLLM 0.28 (transformers 5.15).
+#
+# torch is inherited from the serving venv via a .pth file — do not list it here.
+nemo-automodel>=0.5.0
+datasets>=4.0.0
+megatron-fsdp>=0.2.3
+mistral-common
+pybind11
+pyyaml
+tiktoken
+torchdata
+transformers==5.8.1
+wandb>=0.28.0
+torchao
+mlflow
+pyarrow
+safetensors
+huggingface_hub
+accelerate
+sentencepiece
+regex
+filelock
+packaging
+fsspec
+numpy
+tqdm
+psutil

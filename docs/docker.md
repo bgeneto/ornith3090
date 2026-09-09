@@ -42,6 +42,11 @@ period).
 - Modes are compose profiles: `single` runs `single-user/start_ornith.sh`, `batch`
   runs `batch/start_ornith.sh`. One GPU, so one at a time
   (`docker compose --profile single down` before `--profile batch up -d`).
+- **DFlash2 training** is not in the serving venv (`pip` is `/app/venv/bin/pip`,
+  and NeMo would downgrade `transformers` and break vLLM). Stop the server, then:
+  `docker compose --profile train run --rm train --smoke`
+  (installs `/cache/venv-dflash2` on first run). Inside `docker exec … bash`:
+  `source docker/env.sh` then `bash drafter/train_dflash2.sh --smoke`.
 - Every start-script knob works from `.env`, which is passed straight into the
   container: `CTX=fast`, `DRAFT_TOKENS=4`, `PREFIX_CACHE=1`, `MAX_LEN=`,
   `MAX_SEQS=`, `INT8_ACT=int8`, `EXTRA_ARGS=...`. `PORT` (default 18020) is the

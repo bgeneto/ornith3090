@@ -4,7 +4,7 @@
 #   SPEC=dflash2 …                           # after models/Ornith-1.5-9B-DFlash2-W4A16 exists
 #   docker compose --profile batch  up -d     # throughput
 #   docker compose run --rm prepare           # download + requantize Ornith-1.5-9B
-#   docker compose run --rm single verify     # verify.sh inside the container
+#   docker compose --profile train run --rm train --smoke  # DFlash2 (stop single first)
 #
 # Knobs go in a .env file next to this file: VLLM_API_KEY=...,
 # and any of the start-script variables (CTX, KV, MAX_LEN, MAX_SEQS, GPU_UTIL,
@@ -32,6 +32,9 @@ x-ornith: &ornith
     HF_HUB_ENABLE_HF_TRANSFER: ${HF_HUB_ENABLE_HF_TRANSFER:-1}
     # Override .env PORT so the start script binds vLLM on 8000, not the host port.
     PORT: "8000"
+    # docker exec bash is not a login shell; without this, `pip` is missing
+    # (the image has /app/venv/bin/pip only). docker/bin is bind-mounted.
+    PATH: /app/docker/bin:/app/venv/bin:/usr/local/nvidia/bin:/usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
   volumes:
     - ${MODELS_DIR:-./models}:/app/models
     - ./docker:/app/docker
@@ -80,6 +83,27 @@ services:
     <<: *serve
     profiles: [batch]
     command: batch
+
+  # DFlash2 training. Stop `single` first (one GPU). NeMo lives in
+  # /cache/venv-dflash2, not the serving venv.
+  #   docker compose --profile single stop
+  #   docker compose --profile train run --rm train --smoke
+  train:
+    <<: *ornith
+    profiles: [train]
+    command: train
+    stdin_open: true
+    tty: true
+    depends_on:
+      prepare:
+        condition: service_completed_successfully
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['${NVIDIA_GPU:-0}']
+              capabilities: [gpu]
 
 volumes:
   ornith-cache:

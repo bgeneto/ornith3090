@@ -6,6 +6,7 @@ models/
 profiles/
 qwen.log
 venv/
+venv-dflash2/
 drafter/data/
 drafter/runs/
 .env

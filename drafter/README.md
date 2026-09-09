@@ -39,7 +39,12 @@ $V drafter/smoke_dflash2.py            # checks taps vs GDN/full-attn, fc width,
 
 # 2. Train (NeMo AutoModel TrainDFlash2Recipe; teacher = serving INT4 Ornith)
 bash drafter/train_dflash2.sh --smoke  # 3090 / 1 GPU, sdpa, not a quality run
-bash drafter/train_dflash2.sh          # 2–4 GPU, drafter/ornith_dflash2.yaml
+bash drafter/train_dflash2.sh --cloud  # 2–4 GPU, drafter/ornith_dflash2.yaml
+
+# Docker: there is no system `pip`. Do not install NeMo into /app/venv.
+#   source docker/env.sh
+#   docker compose --profile single stop
+#   docker compose --profile train run --rm train --smoke
 # Copy the consolidated safetensors to models/Ornith-1.5-9B-DFlash2
 
 # 3. GPTQ W4A16 for the 3090 (do not blend ctx_kv into k/v Hessians)

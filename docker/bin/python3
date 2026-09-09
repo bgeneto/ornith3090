@@ -1,0 +1,6 @@
+#!/bin/sh
+if [ -x /app/venv/bin/python ]; then
+  exec /app/venv/bin/python "$@"
+fi
+echo "no /app/venv/bin/python — this wrapper is for the Ornith container" >&2
+exit 1

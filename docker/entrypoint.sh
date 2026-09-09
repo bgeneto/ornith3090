@@ -3,6 +3,7 @@
 #   single   single-user/start_qwen.sh  (MTP speculative decoding, low latency)
 #   batch    batch/start_qwen.sh        (throughput)
 #   prepare  docker/prepare.sh          (download + requantize the model into /app/models)
+#   train     docker/install_dflash2_train.sh then drafter/train_dflash2.sh
 #   verify   verify.sh [args]
 #   <anything else> is exec'd as a command (e.g. bash)
 # Before serving, docker/prepare.sh runs (idempotent: a state check and
@@ -12,6 +13,7 @@
 # FAIL (patches missing, ...); VERIFY=0 skips that.
 set -e
 cd /app
+export PATH="/app/docker/bin:/app/venv/bin:$PATH"
 cmd=${1:-single}; shift || true
 case "$cmd" in
   single|batch)
@@ -36,5 +38,12 @@ case "$cmd" in
     fi ;;
   prepare) exec bash docker/prepare.sh "$@" ;;
   verify)  exec bash verify.sh "$@" ;;
+  train)
+    bash docker/install_dflash2_train.sh
+    if [ $# -eq 0 ]; then
+      exec bash drafter/train_dflash2.sh --smoke
+    fi
+    exec bash drafter/train_dflash2.sh "$@"
+    ;;
   *)       exec "$cmd" "$@" ;;
 esac

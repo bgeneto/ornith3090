@@ -7,6 +7,13 @@ all other ids are -inf. Speculative decoding stays exact (rejection sampling
 uses the target model), only the acceptance rate can change. Set
 MTP_DRAFT_VOCAB=0 to fall back to the shared full lm_head.
 
+GPTQ qweight is [K/pack, V]. VocabParallelEmbedding.weight_loader pads and copies
+along dim 0 (unquantized [V, H]). A draft vocab that is not a multiple of
+DEFAULT_VOCAB_PADDING_SIZE (64) — 40968 after pack=4 alignment — is allocated as
+41024 and load crashes (41024 vs 40968 on dim 1). Allocate the head at the padded
+width and right-pad the checkpoint tensors so Marlin N stays 64-aligned. Existing
+40968-row heads load without a rebuild.
+
 Apply from the installed vllm package directory:
   patch -p1 -d venv/lib/python3.12/site-packages/vllm < patches/qwen3_5-mtp-draft-vocab.patch
 
@@ -14,7 +21,61 @@ Validated against vLLM 0.28.0.
 
 --- a/model_executor/models/qwen3_5_mtp.py
 +++ b/model_executor/models/qwen3_5_mtp.py
-@@ -86,6 +86,26 @@
+@@ -51,6 +51,8 @@
+ from vllm.model_executor.layers.vocab_parallel_embedding import (
+     ParallelLMHead,
+     VocabParallelEmbedding,
++    pad_vocab_size,
++    DEFAULT_VOCAB_PADDING_SIZE,
+ )
+ from vllm.model_executor.models.interfaces import LocalArgmaxMixin
+ from vllm.model_executor.models.qwen3_5 import (
+@@ -67,6 +69,44 @@
+ 
+ logger = init_logger(__name__)
+ 
++
++def _pad_mtp_draft_lm_head_weight(
++    name: str, weight: torch.Tensor, org_v: int, padded_v: int
++) -> torch.Tensor:
++    # GPTQ stores vocab on dim 1; vLLM's embedding weight_loader pads dim 0.
++    if org_v == padded_v or padded_v <= 0:
++        return weight
++    key = name.rsplit(".", 1)[-1]
++    if key in ("g_idx",):
++        return weight
++    if key == "weight_shape":
++        out = weight.clone()
++        out[0] = padded_v
++        return out
++    if weight.ndim == 1:
++        if weight.shape[0] == org_v:
++            return torch.nn.functional.pad(weight, (0, padded_v - org_v))
++        return weight
++    if key in ("qweight", "scales"):
++        if weight.shape[1] == org_v:
++            return torch.nn.functional.pad(weight, (0, padded_v - org_v))
++        return weight
++    if key == "qzeros":
++        pack = org_v // weight.shape[1] if weight.shape[1] else 0
++        if pack < 1 or org_v % pack or padded_v % pack:
++            return weight
++        if weight.shape[1] * pack != org_v:
++            return weight
++        tgt = padded_v // pack
++        if weight.shape[1] == tgt:
++            return weight
++        return torch.nn.functional.pad(weight, (0, tgt - weight.shape[1]))
++    if key in ("weight_packed", "weight_scale", "weight"):
++        if weight.shape[0] == org_v:
++            return torch.nn.functional.pad(weight, (0, 0, 0, padded_v - org_v))
++        return weight
++    return weight
++
+ 
+ @support_torch_compile(
+     dynamic_arg_dims={
+@@ -86,6 +104,32 @@
              prefix=maybe_prefix(prefix, "embed_tokens"),
          )
  
@@ -30,13 +91,19 @@ Validated against vLLM 0.28.0.
 +        if _os.path.exists(_ids_path) and _os.environ.get("MTP_DRAFT_VOCAB", "1") != "0":
 +            _ids = torch.load(_ids_path, map_location="cpu")
 +            self.draft_vocab_ids = _ids
++            # Pad to 64 so GPTQ/Marlin N matches; load_weights right-pads tensors.
++            _n_pad = pad_vocab_size(int(_ids.numel()), DEFAULT_VOCAB_PADDING_SIZE)
 +            self.draft_lm_head = ParallelLMHead(
-+                int(_ids.numel()),
++                _n_pad,
 +                config.hidden_size,
 +                quant_config=vllm_config.quant_config,
 +                prefix=maybe_prefix(prefix, "draft_lm_head"),
 +            )
-+            logger.info("MTP drafter uses a %d-token draft head", int(_ids.numel()))
++            logger.info(
++                "MTP drafter uses a %d-token draft head (padded to %d)",
++                int(_ids.numel()),
++                _n_pad,
++            )
 +
          # Workaround: mtp.fc is stored as BF16 in NVFP4 checkpoints but is
          # missing from hf_quant_config.json exclude_modules. Force unquantized.
@@ -54,7 +121,7 @@ Validated against vLLM 0.28.0.
  
      def embed_input_ids(
          self,
-@@ -299,11 +325,26 @@
+@@ -299,11 +325,33 @@
          hidden_states: torch.Tensor,
          spec_step_idx: int = 0,
      ) -> torch.Tensor | None:
@@ -75,9 +142,16 @@ Validated against vLLM 0.28.0.
      def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
          def remap_weight_names(weights):
              for name, weight in weights:
-+                # syv patch: skip the truncated draft head when it is disabled
++                # syv patch: skip / 64-pad the truncated draft head
 +                if "draft_lm_head" in name and self.model.draft_lm_head is None:
 +                    continue
++                if "draft_lm_head" in name:
++                    weight = _pad_mtp_draft_lm_head_weight(
++                        name,
++                        weight,
++                        int(self.model.draft_vocab_ids.numel()),
++                        int(self.model.draft_lm_head.org_vocab_size),
++                    )
                  if name.startswith("mtp."):
                      name = name.replace("mtp.", "model.")
                  elif any(key in name for key in ["embed_tokens", "lm_head"]):

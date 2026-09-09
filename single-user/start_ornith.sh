@@ -97,7 +97,7 @@ if [ "$SPEC" = "mtp" ]; then
   SPEC_CFG="{\"method\":\"mtp\",\"num_speculative_tokens\":$DRAFT_TOKENS,\"draft_sample_method\":\"${DRAFT_SAMPLE:-probabilistic}\"}"
   SPEC_ARGS=(--speculative-config "$SPEC_CFG")
   export VLLM_SPEC_DECODE_ATTN_QMAX=${VLLM_SPEC_DECODE_ATTN_QMAX:-$((DRAFT_TOKENS + 1))}
-  export MTP_DRAFT_VOCAB=${MTP_DRAFT_VOCAB:-0}
+  export MTP_DRAFT_VOCAB=${MTP_DRAFT_VOCAB:-1}
 elif [ "$SPEC" = "off" ] || [ "$SPEC" = "none" ]; then
   SPEC_ARGS=()
 elif [ "$SPEC" = "dflash2" ]; then

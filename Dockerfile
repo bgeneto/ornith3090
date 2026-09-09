@@ -45,6 +45,7 @@ RUN set -e; SP=$(venv/bin/python -c 'import vllm, os; print(os.path.dirname(vllm
 # FlashInfer JIT (~/.cache/flashinfer), HF hub cache.
 RUN mkdir -p /cache /app/models && chmod 1777 /cache
 ENV HOME=/cache VLLM_NO_USAGE_STATS=1 DO_NOT_TRACK=1 HF_HUB_ENABLE_HF_TRANSFER=1
+ENV PATH="/app/venv/bin:$PATH"
 VOLUME ["/cache", "/app/models"]
 EXPOSE 18020
 ENTRYPOINT ["bash", "docker/entrypoint.sh"]
