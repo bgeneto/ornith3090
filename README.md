@@ -718,7 +718,7 @@ venv/bin/pip install vllm==0.28.0 huggingface_hub hf_transfer ninja \
 # mismatch by downgrading flashinfer-python: that drags torch back and breaks
 # vLLM's C extension.
 
-# model, ~9 GB
+# model, ~9 GB (set HF_TOKEN in .env or shell for faster authenticated downloads)
 HF_HUB_ENABLE_HF_TRANSFER=1 venv/bin/hf download \
   Pilcothink/Ornith-1.5-9B-MixedInt4-AutoRound \
   --local-dir models/Ornith-1.5-9B-MixedInt4-AutoRound

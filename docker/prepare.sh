@@ -45,7 +45,10 @@ EOF
 TODO=$(state)
 if [ "$TODO" = "download" ]; then
   echo "== downloading $HF_REPO -> $BASE (~8.8 GB, resumable)"
-  hf download "$HF_REPO" --local-dir "$BASE"
+  export HF_HUB_ENABLE_HF_TRANSFER=${HF_HUB_ENABLE_HF_TRANSFER:-1}
+  HF_ARGS=()
+  [ -n "${HF_TOKEN:-}" ] && HF_ARGS+=(--token "$HF_TOKEN")
+  hf download "$HF_REPO" --local-dir "$BASE" "${HF_ARGS[@]}"
   TODO=$(state)
 fi
 [ "$TODO" = "download" ] && { echo "prepare: download incomplete (shards missing after hf download)"; exit 1; }

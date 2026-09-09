@@ -27,12 +27,33 @@ default_dst = ("Qwen3.8-27B-Uncensored-W4A16" if REPO == DEFAULT_REPO
 D = (args[1] if len(args) > 1 else os.path.join(ROOT, "models", default_dst)).rstrip("/")
 os.makedirs(D, exist_ok=True)
 
+# HF authentication token from environment or .env
+token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")
+if not token:
+    env_file = os.path.join(ROOT, ".env")
+    if os.path.isfile(env_file):
+        for line in open(env_file):
+            line = line.strip()
+            if line.startswith("HF_TOKEN=") and not line.startswith("#"):
+                val = line.split("=", 1)[1].strip().strip('"').strip("'")
+                if val:
+                    token = val
+                break
+token = token.strip() if token else None
+
+if os.environ.get("HF_HUB_ENABLE_HF_TRANSFER", "1") != "0":
+    try:
+        import hf_transfer  # noqa: F401
+        os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
+    except ImportError:
+        pass
+
 # chat_template.jinja is not *.json and the server needs it: without it vLLM falls back
 # to the tokenizer's built-in template, which is not the one these checkpoints were
 # tuned with (and does not emit the XML tool-call format --tool-call-parser
 # qwen3_coder reads). *.txt covers merges.txt-style tokenizers that ship no
 # tokenizer.json.
-snapshot_download(REPO, local_dir=D,
+snapshot_download(REPO, local_dir=D, token=token,
                   allow_patterns=["*.json", "*.jinja", "*.txt", "*.safetensors",
                                   "README.md"])
 

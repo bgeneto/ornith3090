@@ -27,10 +27,38 @@ default_dst = (
 D = (args[1] if len(args) > 1 else os.path.join(ROOT, "models", default_dst)).rstrip("/")
 os.makedirs(D, exist_ok=True)
 
+# HF authentication token from environment or .env
+token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")
+if not token:
+    env_file = os.path.join(ROOT, ".env")
+    if os.path.isfile(env_file):
+        for line in open(env_file):
+            line = line.strip()
+            if line.startswith("HF_TOKEN=") and not line.startswith("#"):
+                val = line.split("=", 1)[1].strip().strip('"').strip("'")
+                if val:
+                    token = val
+                break
+token = token.strip() if token else None
+if token:
+    print("Using HF_TOKEN for authenticated high-speed download.")
+else:
+    print("HF_TOKEN not detected (unauthenticated download; set HF_TOKEN in .env for faster downloads).")
+
+# Enable hf_transfer for high-speed parallel chunk downloads
+if os.environ.get("HF_HUB_ENABLE_HF_TRANSFER", "1") != "0":
+    try:
+        import hf_transfer  # noqa: F401
+        os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
+        print("Fast download backend enabled: hf_transfer (Rust parallel downloader).")
+    except ImportError:
+        pass
+
 print(f"Downloading {REPO} to {D}...")
 snapshot_download(
     REPO,
     local_dir=D,
+    token=token,
     allow_patterns=[
         "*.json",
         "*.jinja",

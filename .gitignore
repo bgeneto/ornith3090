@@ -9,6 +9,12 @@ venv/
 drafter/data/
 drafter/runs/
 .env
+.env.*
+!.env.example
+*.swp
+.*.swp
+*.swo
+.*.swo
 # local reproduction artifacts (symlinks here, so no trailing slash)
 venv
 models

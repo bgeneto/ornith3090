@@ -9,7 +9,7 @@ Run from the repo root, in order — `quant_lm_head.py` first, because `build_dr
 
 ```bash
 V=venv/bin/python; M=models/Ornith-1.5-9B-MixedInt4-AutoRound
-$V prepare/fetch_ornith.py             # download Pilcothink INT4 checkpoint (~8.8 GB)
+$V prepare/fetch_ornith.py             # download Pilcothink INT4 checkpoint (~8.8 GB; uses HF_TOKEN if set)
 $V prepare/quant_lm_head.py $M         # lm_head -> int8 group-128, in place: ~1.02 GB freed, speeds up decode
 $V prepare/quant_embed.py   $M         # embed_tokens likewise (untied): another ~1.02 GB freed
 $V prepare/quant_mtp.py     $M         # verifies MTP layers (already INT4 in Pilcothink)

@@ -23,6 +23,8 @@ x-ornith: &ornith
       required: false
   environment:
     HOME: /cache
+    HF_TOKEN: ${HF_TOKEN:-}
+    HF_HUB_ENABLE_HF_TRANSFER: ${HF_HUB_ENABLE_HF_TRANSFER:-1}
   volumes:
     - ${MODELS_DIR:-./models}:/app/models
     - ornith-cache:/cache

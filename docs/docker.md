@@ -27,34 +27,23 @@ Docker Desktop with WSL2, leave `VLLM_WSL2_ENABLE_PIN_MEMORY=1` enabled; it is
 required by the V2 runner before model loading begins. The detailed failure
 signature and other WSL2 workarounds are below.
 
-**The image is prebuilt**: every push to `main` builds and pushes
-`ghcr.io/syv-ai/qwen38-27b-rtx3090:latest` (plus an immutable `sha-<7>` tag
-per commit) from CI, with the Dockerfile's own patch application and
-`verify.sh --install` as the gate — a patch that stops applying fails the
-build and nothing is pushed. The first `up` pulls it (~9.5 GB,
-`pull_policy: missing`); to pin a known
-build, set `image: ghcr.io/syv-ai/qwen38-27b-rtx3090:sha-<7>` in a compose
-override. Building locally instead still works — `docker compose build` (or
-`up --build`) produces the identical image (~20 minutes) — and the `prepare` service downloads
-the model into `./models` and runs the same requantization scripts as above
-(CPU only, idempotent, ~20 GB + a few minutes; `FAST_VARIANT=0` in `.env`
-skips the ~1 GB fast-variant download), then the server starts. The first
-start also does the torch.compile / CUDA-graph / FlashInfer-JIT work (2–3
-minutes); that lands in the `qwen-cache` volume, so later starts take ~1
-minute. `docker compose ps` shows the healthcheck (`/health`, 15-minute start
-period). Measured in the container on the 3090: single-user 112.6 / 115.7 tok/s
-(e2e / decode, default sampling), batch 950 tok/s on the 128/512 × 64 row, the
-same KV pools as the venv install — no container tax; the only first-start
-difference is gotcha 16 below.
+**The image is built**: every start builds or pulls `ornith15-9b-rtx3090:latest`, with the Dockerfile's own patch application and
+`verify.sh --install` as the gate. Building locally with `docker compose build` (or
+`up --build`) produces the image (~15 minutes) — and the `prepare` service downloads
+the model into `./models` on the host and runs the same requantization scripts as above
+(CPU only, idempotent, ~9 GB + a couple of minutes), then the server starts. The first
+start also does the torch.compile / CUDA-graph / FlashInfer-JIT work (1–2
+minutes); that lands in the `ornith-cache` volume, so later starts take seconds.
+`docker compose ps` shows the healthcheck (`/health`, 15-minute start
+period).
 
-- Modes are compose profiles: `single` runs `single-user/start_qwen.sh`, `batch`
-  runs `batch/start_qwen.sh`. One GPU, so one at a time
+- Modes are compose profiles: `single` runs `single-user/start_ornith.sh`, `batch`
+  runs `batch/start_ornith.sh`. One GPU, so one at a time
   (`docker compose --profile single down` before `--profile batch up -d`).
 - Every start-script knob works from `.env`, which is passed straight into the
-  container: `CTX=long`, `KV=kvarn`, `SPEC=dflash2`, `PREFIX_CACHE=1`, `MAX_LEN=`,
-  `MAX_SEQS=`, `SPEC_ATTN=0`, `EXTRA_ARGS=...` (`prepare` also fetches the DFlash2 drafter;
-  `DFLASH2=0` skips it). `PORT` (default 18020) and `MODELS_DIR` (default `./models`,
-  so a venv install and the container can share one download) are read by
+  container: `CTX=fast`, `DRAFT_TOKENS=4`, `PREFIX_CACHE=1`, `MAX_LEN=`,
+  `MAX_SEQS=`, `INT8_ACT=int8`, `EXTRA_ARGS=...`. `PORT` (default 18020) and `MODELS_DIR` (default `./models`,
+  so a venv install and the container share one persistent download) are read by
   compose itself.
 - `docker compose run --rm single verify` runs `verify.sh` inside the container
   (GPU, patches, model). The entrypoint runs the idempotent `prepare` and then
