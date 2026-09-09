@@ -37,7 +37,9 @@ the model into `./models` on the host and runs the same requantization scripts a
 start also does the torch.compile / CUDA-graph / FlashInfer-JIT work (1–2
 minutes); that lands in the `ornith-cache` volume, so later starts take seconds.
 `docker compose ps` shows the healthcheck (`/health`, 15-minute start
-period).
+period). After 90s with no inference the idle proxy (`docker/vllm-idle-proxy.py`)
+puts vLLM to sleep; `/health` still returns 200. The next `/v1/chat/completions`
+wakes the engine. `SLEEP_LEVEL=0` disables this.
 
 - Modes are compose profiles: `single` runs `single-user/start_ornith.sh`, `batch`
   runs `batch/start_ornith.sh`. One GPU, so one at a time
@@ -50,9 +52,10 @@ period).
 - Every start-script knob works from `.env`, which is passed straight into the
   container: `CTX=fast`, `DRAFT_TOKENS=4`, `PREFIX_CACHE=1`, `MAX_LEN=`,
   `MAX_SEQS=`, `INT8_ACT=int8`, `EXTRA_ARGS=...`. `PORT` (default 18020) is the
-  **host** publish port: compose maps `PORT:8000` because vLLM listens on 8000
-  inside the container. `MODELS_DIR` (default `./models`, so a venv install and
-  the container share one persistent download) is also read by compose itself.
+  **host** publish port: compose maps `PORT:8000` because the idle proxy (or
+  vLLM when `SLEEP_LEVEL=0`) listens on 8000 inside the container. `MODELS_DIR`
+  (default `./models`, so a venv install and the container share one persistent
+  download) is also read by compose itself.
 - `docker compose run --rm single verify` runs `verify.sh` inside the container
   (GPU, patches, model). The entrypoint runs the idempotent `prepare` and then
   `verify.sh --no-server` before every start — so a missing or half-prepared

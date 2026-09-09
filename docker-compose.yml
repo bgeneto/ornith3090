@@ -11,9 +11,9 @@
 # DRAFT_TOKENS, SERVED_MODEL_NAME, SLEEP_LEVEL, EXTRA_ARGS, ...) — .env is passed straight
 # into the container.
 #
-# PORT is the host publish port only. vLLM always listens on 8000 inside the
-# container (its own default), so PORT=8002 publishes as 8002:8000 — not
-# 8002:8002. Recreate after changing PORT (`docker compose up -d --force-recreate`).
+# PORT is the host publish port only. The idle proxy always listens on 8000
+# inside the container, so PORT=8002 publishes as 8002:8000 — not 8002:8002.
+# Recreate after changing PORT (`docker compose up -d --force-recreate`).
 # MODELS_DIR defaults to ./models (same layout as the venv install).
 # NVIDIA_GPU is the host GPU index (or UUID) for device_ids; default 0.
 # One GPU: run either "single" or "batch", not both.
@@ -30,7 +30,8 @@ x-ornith: &ornith
     HOME: /cache
     HF_TOKEN: ${HF_TOKEN:-}
     HF_HUB_ENABLE_HF_TRANSFER: ${HF_HUB_ENABLE_HF_TRANSFER:-1}
-    # Override .env PORT so the start script binds vLLM on 8000, not the host port.
+    # Override .env PORT so the idle proxy (and vLLM when SLEEP_LEVEL=0)
+    # binds on 8000, not the host port.
     PORT: "8000"
     # docker exec bash is not a login shell; without this, `pip` is missing
     # (the image has /app/venv/bin/pip only). docker/bin is bind-mounted.

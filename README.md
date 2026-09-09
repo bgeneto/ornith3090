@@ -20,6 +20,8 @@ docker compose --profile single up -d    # low-latency single-user chat / coding
 docker compose --profile batch  up -d    # API backend, many concurrent requests
 ```
 
+After 90 seconds with no inference, the GPU parks (vLLM sleep level 1: weights offloaded to CPU, KV cache discarded). The next chat request auto-wakes; `GET /health` stays 200 so Compose does not flip the container unhealthy. Listing models does not count as activity. `SLEEP_LEVEL=0` keeps the engine resident; `VLLM_IDLE_TIMEOUT` (default 90) is the quiet period.
+
 The example uses the recommended single-user `SPEC=mtp` profile with `DRAFT_TOKENS=4`. If Docker
 Desktop is using WSL2, keep `VLLM_WSL2_ENABLE_PIN_MEMORY=1` enabled in `.env`. The example
 leaves API-key authentication disabled for local-only use; set `VLLM_API_KEY`

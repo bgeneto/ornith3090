@@ -204,10 +204,13 @@ if [ -n "${CPU_OFFLOAD_GB:-}" ] && [ "$CPU_OFFLOAD_GB" != "0" ]; then
   EXTRA_ARGS="--cpu-offload-gb $CPU_OFFLOAD_GB ${EXTRA_ARGS}"
 fi
 
-# Sleep mode (vLLM --enable-sleep-mode). Level is not a serve CLI arg in 0.28:
-# 0 or unset = off; 1/2 enable the flag and /sleep + /wake_up (VLLM_SERVER_DEV_MODE=1).
-# Clients then POST /sleep?level=$SLEEP_LEVEL. 1 offloads weights to CPU; 2 discards them.
-SLEEP_LEVEL=${SLEEP_LEVEL:-0}
+# Sleep mode (vLLM --enable-sleep-mode). Default 1: park GPU after VLLM_IDLE_TIMEOUT
+# (90s) and auto-wake on the next inference request via docker/vllm-idle-proxy.py.
+# Level is not a serve CLI arg in 0.28: 0 = off; 1/2 enable the flag and
+# /sleep + /wake_up (VLLM_SERVER_DEV_MODE=1). 1 offloads weights to CPU; 2 discards them.
+SLEEP_LEVEL=${SLEEP_LEVEL:-1}
+export SLEEP_LEVEL
+export VLLM_IDLE_TIMEOUT=${VLLM_IDLE_TIMEOUT:-90}
 SLEEP_ARGS=()
 case "$SLEEP_LEVEL" in
   0|"") ;;
@@ -254,10 +257,24 @@ fi
 
 export PATH="$REPO/venv/bin:$PATH"
 
+if [ "$SLEEP_LEVEL" = "1" ] || [ "$SLEEP_LEVEL" = "2" ]; then
+  export VLLM_IDLE_BIND_HOST="$HOST"
+  export VLLM_IDLE_BIND_PORT="$PORT"
+  HOST=127.0.0.1
+  PORT=${VLLM_ENGINE_PORT:-$((VLLM_IDLE_BIND_PORT + 1))}
+  export VLLM_ENGINE_PORT="$PORT"
+  export VLLM_IDLE_UPSTREAM="http://127.0.0.1:${PORT}"
+fi
+
 echo "=== Starting Ornith-1.5-9B single-user server ==="
 echo "Model:        $MODEL"
 echo "Served as:    $SERVED_MODEL_NAME"
-echo "Port:         $PORT"
+if [ "$SLEEP_LEVEL" = "1" ] || [ "$SLEEP_LEVEL" = "2" ]; then
+  echo "Port:         $VLLM_IDLE_BIND_PORT"
+  echo "Idle proxy:   ${VLLM_IDLE_BIND_HOST}:${VLLM_IDLE_BIND_PORT} -> 127.0.0.1:${PORT} (timeout ${VLLM_IDLE_TIMEOUT}s)"
+else
+  echo "Port:         $PORT"
+fi
 echo "Context:      $MAX_LEN tokens (mode: $CTX)"
 echo "Speculation:  $SPEC (draft tokens: $DRAFT_TOKENS)"
 [ "$SPEC" = "dflash2" ] && echo "Drafter:      $DRAFT"
@@ -266,7 +283,7 @@ echo "GPU util:     $GPU_UTIL"
 echo "Sleep level:  $SLEEP_LEVEL"
 echo "==============================================="
 
-exec venv/bin/vllm serve "$MODEL" \
+exec bash "$REPO/docker/run_vllm.sh" venv/bin/vllm serve "$MODEL" \
   --served-model-name "$SERVED_MODEL_NAME" \
   --host "$HOST" --port "$PORT" \
   --trust-remote-code \

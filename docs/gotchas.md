@@ -1033,3 +1033,17 @@ Things that each cost us hours, in rough order of pain. Worth skimming before yo
     Measured in the
     [#25](https://github.com/syv-ai/qwen38-27b-rtx3090/issues/25) comments of
     2026-09-05 (items 13 and 14, and the corrections to items 9 and 11).
+
+54. **Idle sleep wipes KV and is not a healthcheck.** Default `SLEEP_LEVEL=1`
+    parks the GPU after `VLLM_IDLE_TIMEOUT` (90s) with no inference: weights go
+    to CPU RAM (~8.5 GB extra host memory for this checkpoint), and the KV /
+    prefix cache is discarded. The next `/v1/chat/completions` waits on
+    `POST /wake_up` (usually a few seconds) then streams; first-token latency
+    after idle includes that copy, and a long chat has to re-prefill. `/health`
+    stays 200 while asleep so Docker Compose does not mark the container
+    unhealthy — do not replace the healthcheck with a sleep script. `GET
+    /v1/models` and `/metrics` do not reset the idle timer. `SLEEP_LEVEL=0`
+    disables it. On a tight WSL2 memory budget (gotcha 53 / `.wslconfig`),
+    either raise host RAM or set `SLEEP_LEVEL=0`; if `--enable-sleep-mode`
+    crashes at startup (CUDA VMM / CuMemAllocator), the launcher retries once
+    without sleep mode so `compose up` still serves.
