@@ -3,7 +3,7 @@
 # in prepare/) against /app/models (a bind mount / volume), each skipped when its
 # result is already there. On the CPU (no GPU needed). ~19.5 GB download + a few minutes of
 # requantization; a fast-variant download of ~1 GB unless FAST_VARIANT=0, and the
-# ~1 GB W4A16 DFlash2 drafter (SPEC=dflash2) unless DFLASH2=0.
+# ~1 GB W4A16 Ornith DFlash2 drafter (SPEC=dflash2) unless DFLASH2=0.
 #
 #   docker compose run --rm prepare      (also runs automatically before single/batch)
 set -e
@@ -77,7 +77,7 @@ if (("mtp.draft_lm_head.weight_packed" not in idx and "mtp.draft_lm_head.qweight
 
 if os.environ.get("FAST_VARIANT", "0") != "0" and not os.path.exists(d[:-1] + "-fast/model.safetensors.index.json"):
     todo.append("fast")
-if os.environ.get("DFLASH2", "0") != "0" and not os.path.exists(os.path.dirname(d[:-1]) + "/Qwen3.8-27B-DFlash2-W4A16/model.safetensors"):
+if os.environ.get("DFLASH2", "0") != "0" and not os.path.exists(os.path.dirname(d[:-1]) + "/Ornith-1.5-9B-DFlash2-W4A16/config.json"):
     todo.append("dflash2")
 print(" ".join(todo))
 EOF
@@ -102,9 +102,9 @@ for step in $TODO; do
              python prepare/build_draft_vocab.py "$BASE" --ids prepare/draft_vocab_ids.json ;;
     fast)    echo "== fetch_fast_variant.py"
              python prepare/fetch_fast_variant.py "$BASE" "$BASE-fast" ;;
-    dflash2) echo "== fetch_dflash2.py"
-             python prepare/fetch_dflash2.py "$(dirname "$BASE")/Qwen3.8-27B-DFlash2-W4A16" \
-               || echo "prepare: DFlash2 drafter not fetched (optional; DFLASH2=0 silences this)" ;;
+    dflash2) echo "== fetch_dflash2.py (Ornith DFlash2, not Qwen 27B)"
+             python prepare/fetch_dflash2.py "$(dirname "$BASE")/Ornith-1.5-9B-DFlash2-W4A16" \
+               || echo "prepare: Ornith DFlash2 drafter not fetched (train it; DFLASH2=0 silences this)" ;;
   esac
 done
 LEFT=$(state | sed 's/\bdflash2\b//')

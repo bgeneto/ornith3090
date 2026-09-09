@@ -191,7 +191,7 @@ EOF
 fi
 echo "== single-user DFlash2 drafter (optional, SPEC=dflash2, Phase 2)"
 if [ -f "$HERE/models/Ornith-1.5-9B-DFlash2-W4A16/config.json" ]; then
-  $PY -c "import json,sys; c=json.load(open('$HERE/models/Ornith-1.5-9B-DFlash2-W4A16/config.json')); assert c['architectures']==['DFlash2DraftModel'] and c['quantization_config']['quant_method']=='compressed-tensors'" 2>/dev/null && ok "DFlash2 drafter present, W4A16 (models/Ornith-1.5-9B-DFlash2-W4A16)" || fail "models/Ornith-1.5-9B-DFlash2-W4A16 is not a quantized DFlash2DraftModel checkpoint"
+  $PY -c "import json,sys; c=json.load(open('$HERE/models/Ornith-1.5-9B-DFlash2-W4A16/config.json')); taps=(c.get('dflash_config') or {}).get('target_layer_ids') or [0]; assert c['architectures']==['DFlash2DraftModel'] and c['quantization_config']['quant_method']=='compressed-tensors' and c.get('hidden_size')==4096 and max(taps)<32 and c.get('is_causal') is False" 2>/dev/null && ok "DFlash2 drafter present, W4A16 Ornith geometry (models/Ornith-1.5-9B-DFlash2-W4A16)" || fail "models/Ornith-1.5-9B-DFlash2-W4A16 is not a quantized Ornith DFlash2DraftModel (hidden 4096, taps<32, is_causal false)"
   [ -f "$SP/model_executor/models/qwen3_dflash2.py" ] || fail "DFlash2 drafter present but vLLM 0.28.0 native DFlash2 support is missing"
 else warn "no Ornith DFlash2 drafter (Phase 1 uses native MTP k=4; DFlash2 requires 32-layer Ornith retrained drafter)"; fi
 

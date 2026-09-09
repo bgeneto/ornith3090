@@ -113,6 +113,12 @@ TRITON_ATTN --max-model-len 262144` (batch/start_qwen.sh: `KV=int4pth`).
 
 ## DFlash2 past 64k (`SPEC=dflash2 CTX=long`)
 
+> Pool sizes and tok/s in this section were measured on **Qwen3.8-27B** with a
+> pinned 5.2 GiB `KV_MEM`. Ornith-1.5-9B weights are ~8.5 GB and
+> `start_ornith.sh` sizes the pool from `GPU_UTIL` unless you set `KV_MEM`.
+> Re-measure with `bash bench/dflash2_vs_mtp.sh` after a trained Ornith
+> drafter exists; do not quote 154.8 tok/s copy as an Ornith figure.
+
 The block drafter was pinned to `CTX=fast` — bf16 KV on FlashAttention, 64k at
 `DFLASH_TOKENS=7` and 56k at 15 — because bf16 KV is 64 KB per token and the pinned
 5.2 GiB pool is exactly that much. `CTX=long` moves it to an `int8_per_token_head` cache

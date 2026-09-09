@@ -1,0 +1,65 @@
+# 3090 / single-GPU smoke for Ornith DFlash2. Not a quality recipe.
+#
+#   bash drafter/train_dflash2.sh --smoke
+#
+# Uses SDPA (no flex_attention), short sequences, few anchors, 1 GPU, no TP.
+# Teacher is the serving INT4 checkpoint. Data: drafter/data/chat_smoke.jsonl
+# (or chat.jsonl if present).
+
+recipe: TrainDFlash2Recipe
+
+dist_env:
+  backend: nccl
+  timeout_minutes: 15
+
+distributed:
+  strategy: fsdp2
+  tp_size: 1
+
+recipe_args:
+  target_model_name_or_path: models/Ornith-1.5-9B-MixedInt4-AutoRound
+  train_data_path: drafter/data/chat_smoke.jsonl
+  val_data_path: null
+  output_dir: ./drafter/runs/dflash2_ornith_smoke
+  seq_length: 512
+  micro_batch_size: 1
+  grad_accumulation_steps: 1
+  num_workers: 0
+  num_epochs: 1
+
+  draft_num_hidden_layers: 5
+  block_size: 8
+  num_anchors: 8
+  loss_decay_gamma: 4.0
+  mask_token_id: 248077
+  target_layer_ids: [1, 8, 15, 22, 29]
+  attention_backend: sdpa
+  draft_sliding_window: 2048
+
+  draft_num_attention_heads: 32
+  draft_num_key_value_heads: 8
+  draft_head_dim: 128
+
+  conv_kernel_size: 2
+  conv_group_size: 16
+  selector_rank: 256
+  selector_top_k: 16
+  selector_loss_weight: 1.0
+
+  trust_remote_code: true
+  shuffle_seed: 42
+  log_every_steps: 1
+  max_grad_norm: 1.0
+
+optimizer:
+  lr: 6.0e-4
+  betas: [0.9, 0.95]
+  weight_decay: 0.0
+  warmup_ratio: 0.0
+  min_lr_ratio: 0.1
+
+checkpoint:
+  enabled: true
+  checkpoint_dir: ./drafter/runs/dflash2_ornith_smoke/checkpoints
+  model_save_format: safetensors
+  save_consolidated: true

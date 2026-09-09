@@ -10,7 +10,8 @@
 #  - Triton split-KV verification attention (patches/spec-decode-attn.patch)
 #  - Sort-free top-k / fast multi-block softmax sampler (patches/sampler-small-topk-fast-softmax.patch)
 #  - Hybrid prefix caching (--enable-prefix-caching --mamba-cache-mode align)
-#  - Optional Marlin INT8 activation tensor-core GEMMs for prefill (INT8_ACT=int8)
+#  - Optional DFlash2 block drafter (SPEC=dflash2) after training
+#    models/Ornith-1.5-9B-DFlash2-W4A16 — not the Qwen 27B checkpoint
 #
 # Measured baseline on RTX 3090:
 #   Stock BF16: ~44-50 tok/s
@@ -21,6 +22,7 @@
 #   bash single-user/start_ornith.sh
 #   PREFIX_CACHE=1 DRAFT_TOKENS=4 bash single-user/start_ornith.sh
 #   INT8_ACT=int8 bash single-user/start_ornith.sh   # prefill boost
+#   SPEC=dflash2 bash single-user/start_ornith.sh   # after models/Ornith-1.5-9B-DFlash2-W4A16
 
 set -euo pipefail
 
@@ -48,6 +50,10 @@ MAX_SEQS=${MAX_SEQS:-8}
 API_SERVERS=${API_SERVERS:-1}
 CTX=${CTX:-fast}
 SPEC=${SPEC:-mtp}
+EXTRA_ARGS=${EXTRA_ARGS:-}
+# Remember caller MAX_LEN: SPEC=dflash2 profiles pick their own default and must
+# not clobber an explicit MAX_LEN=8192 (same trap as start_qwen #25 item 13).
+USER_MAX_LEN=${MAX_LEN:-}
 
 # Prefill int8 activations (Marlin W4A8)
 INT8_ACT=${INT8_ACT-}
@@ -76,6 +82,17 @@ fi
 # Speculative Decoding configuration
 SPEC_ARGS=()
 CG=${CG:-32}
+ASYNC_ARGS=()
+if [ "$SPEC" = "dflash2" ] && [ "$CTX" = "long" ]; then
+  ATTN_ARGS="--attention-backend TRITON_ATTN --kv-cache-dtype int8_per_token_head"
+  export VLLM_SPEC_DECODE_ATTN=${SPEC_ATTN:-1}
+elif [ "$SPEC" = "dflash2" ] && [ "$CTX" = "huge" ]; then
+  export VLLM_SPEC_DECODE_ATTN=0
+elif [ "$SPEC" = "dflash2" ] && [ "$CTX" != "fast" ]; then
+  echo "SPEC=dflash2 supports CTX=fast (bf16), CTX=long (int8), CTX=huge (KVarN); CTX=$CTX keeps SPEC=mtp" >&2
+  SPEC=mtp
+fi
+
 if [ "$SPEC" = "mtp" ]; then
   SPEC_CFG="{\"method\":\"mtp\",\"num_speculative_tokens\":$DRAFT_TOKENS,\"draft_sample_method\":\"${DRAFT_SAMPLE:-probabilistic}\"}"
   SPEC_ARGS=(--speculative-config "$SPEC_CFG")
@@ -83,13 +100,100 @@ if [ "$SPEC" = "mtp" ]; then
   export MTP_DRAFT_VOCAB=${MTP_DRAFT_VOCAB:-0}
 elif [ "$SPEC" = "off" ] || [ "$SPEC" = "none" ]; then
   SPEC_ARGS=()
+elif [ "$SPEC" = "dflash2" ]; then
+  if [ -z "${DRAFT:-}" ]; then
+    for d in Ornith-1.5-9B-DFlash2-W4A16 Ornith-1.5-9B-DFlash2; do
+      cfg="$REPO/models/$d/config.json"
+      [ -f "$cfg" ] || continue
+      if [ -f "$REPO/models/$d/model.safetensors" ] || [ -f "$REPO/models/$d/model.safetensors.index.json" ]; then
+        DRAFT=$REPO/models/$d
+        break
+      fi
+    done
+  fi
+  [ -n "${DRAFT:-}" ] || {
+    echo "SPEC=dflash2 needs an Ornith DFlash2 drafter (not Qwen3.8-27B-DFlash2)." >&2
+    echo "Train: bash drafter/train_dflash2.sh   Quantize: drafter/quant_dflash2.py" >&2
+    echo "Or:    venv/bin/python prepare/fetch_dflash2.py" >&2
+    exit 1
+  }
+  if [ ! -f "$DRAFT/model.safetensors" ] && [ ! -f "$DRAFT/model.safetensors.index.json" ]; then
+    echo "SPEC=dflash2: $DRAFT has config.json but no weights. Train or fetch W4A16." >&2
+    exit 1
+  fi
+  python3 - "$DRAFT" <<'PY' || exit 1
+import json, sys
+c = json.load(open(sys.argv[1] + "/config.json"))
+h = c.get("hidden_size"); n = c.get("num_target_layers")
+taps = (c.get("dflash_config") or {}).get("target_layer_ids") or []
+if h != 4096 or (n is not None and n != 32) or (taps and max(taps) >= 32):
+    sys.stderr.write(
+        f"refusing {sys.argv[1]}: hidden={h} num_target_layers={n} taps={taps}\n"
+        "Ornith-1.5-9B needs hidden 4096, 32 target layers, taps < 32.\n"
+        "Do not fetch syvai/Qwen3.8-27B-DFlash2-W4A16.\n")
+    sys.exit(1)
+if (c.get("architectures") or [None])[0] != "DFlash2DraftModel":
+    sys.stderr.write(f"refusing {sys.argv[1]}: architectures={c.get('architectures')}\n")
+    sys.exit(1)
+if c.get("is_causal") is not False:
+    sys.stderr.write(f"refusing {sys.argv[1]}: is_causal={c.get('is_causal')} (must be false for DFlash2)\n")
+    sys.exit(1)
+PY
+  export VLLM_DFLASH2_LOOKUP=${LOOKUP:-1}
+  # V2 runner UVA on WSL2. Leave unset on bare metal unless the caller wants it.
+  if grep -qi microsoft /proc/sys/kernel/osrelease 2>/dev/null || [ -n "${WSL_DISTRO_NAME:-}" ]; then
+    export VLLM_WSL2_ENABLE_PIN_MEMORY=${VLLM_WSL2_ENABLE_PIN_MEMORY:-1}
+  fi
+  DRAFT_TOKENS=${DFLASH_TOKENS:-7}
+  SPEC_CFG="{\"method\":\"dflash\",\"model\":\"$DRAFT\",\"num_speculative_tokens\":$DRAFT_TOKENS,\"draft_sample_method\":\"${DRAFT_SAMPLE:-probabilistic}\"}"
+  SPEC_ARGS=(--speculative-config "$SPEC_CFG")
+  export VLLM_SPEC_DECODE_ATTN_QMAX=${VLLM_SPEC_DECODE_ATTN_QMAX:-$((DRAFT_TOKENS + 1))}
+  if [ "$VLLM_DFLASH2_LOOKUP" = "1" ] && [ "$DRAFT_TOKENS" -gt 7 ]; then
+    ASYNC_SCHED=${ASYNC_SCHED:-0}
+  fi
+  if [ "$CTX" = "huge" ]; then
+    MAX_SEQS=${MAX_SEQS:-2}
+    if [ "$DRAFT_TOKENS" -gt 7 ]; then
+      MAX_LEN=${DFLASH_MAX_LEN:-${USER_MAX_LEN:-221184}}
+      export VLLM_V2_CUDAGRAPH_MEM_MIB=${VLLM_V2_CUDAGRAPH_MEM_MIB:-1900}
+    else
+      MAX_LEN=${DFLASH_MAX_LEN:-${USER_MAX_LEN:-245760}}
+      export VLLM_V2_CUDAGRAPH_MEM_MIB=${VLLM_V2_CUDAGRAPH_MEM_MIB:-1400}
+    fi
+  elif [ "$CTX" = "long" ]; then
+    MAX_SEQS=${MAX_SEQS:-4}
+    MAX_LEN=${DFLASH_MAX_LEN:-${USER_MAX_LEN:-131072}}
+    if [ "$DRAFT_TOKENS" -gt 7 ]; then
+      export VLLM_V2_CUDAGRAPH_MEM_MIB=${VLLM_V2_CUDAGRAPH_MEM_MIB:-1900}
+    else
+      export VLLM_V2_CUDAGRAPH_MEM_MIB=${VLLM_V2_CUDAGRAPH_MEM_MIB:-1400}
+    fi
+  elif [ "$DRAFT_TOKENS" -gt 7 ]; then
+    MAX_SEQS=${MAX_SEQS:-4}
+    MAX_LEN=${DFLASH_MAX_LEN:-${USER_MAX_LEN:-57344}}
+    export VLLM_V2_CUDAGRAPH_MEM_MIB=${VLLM_V2_CUDAGRAPH_MEM_MIB:-1900}
+  else
+    MAX_LEN=${DFLASH_MAX_LEN:-${USER_MAX_LEN:-65536}}
+    export VLLM_V2_CUDAGRAPH_MEM_MIB=${VLLM_V2_CUDAGRAPH_MEM_MIB:-1400}
+  fi
+  MAX_SEQS=${MAX_SEQS:-8}
+  if [ $((MAX_SEQS * (DRAFT_TOKENS + 1))) -gt 64 ]; then
+    CG=${CG:-64}
+  else
+    CG=${CG:-$((MAX_SEQS * (DRAFT_TOKENS + 1)))}
+  fi
+  # Ornith weights are ~8.5 GB; do not copy the 27B 5.2 GiB KV_MEM pin. Size the
+  # pool from GPU_UTIL unless the caller sets KV_MEM explicitly.
+  if [ -n "${KV_MEM:-}" ]; then
+    EXTRA_ARGS="--kv-cache-memory=$KV_MEM ${EXTRA_ARGS}"
+  fi
+  [ "${ASYNC_SCHED:-1}" = 1 ] && ASYNC_ARGS=(--async-scheduling)
 else
-  echo "Unsupported SPEC=$SPEC for Ornith-1.5-9B (use 'mtp' or 'off')" >&2
+  echo "Unsupported SPEC=$SPEC for Ornith-1.5-9B (use 'mtp', 'dflash2', or 'off')" >&2
   exit 1
 fi
 
 # Prefix Caching (defaults to ON for agent / code workflows)
-EXTRA_ARGS=${EXTRA_ARGS:-}
 PREFIX_CACHE=${PREFIX_CACHE:-1}
 if [ "$PREFIX_CACHE" = "1" ]; then
   EXTRA_ARGS="--enable-prefix-caching --mamba-cache-mode align ${EXTRA_ARGS}"
@@ -156,6 +260,7 @@ echo "Served as:    $SERVED_MODEL_NAME"
 echo "Port:         $PORT"
 echo "Context:      $MAX_LEN tokens (mode: $CTX)"
 echo "Speculation:  $SPEC (draft tokens: $DRAFT_TOKENS)"
+[ "$SPEC" = "dflash2" ] && echo "Drafter:      $DRAFT"
 echo "Prefix Cache: $PREFIX_CACHE"
 echo "GPU util:     $GPU_UTIL"
 echo "Sleep level:  $SLEEP_LEVEL"
@@ -179,4 +284,5 @@ exec venv/bin/vllm serve "$MODEL" \
   --enable-prompt-tokens-details \
   "${TOOL_ARGS[@]}" \
   "${SLEEP_ARGS[@]}" \
+  "${ASYNC_ARGS[@]}" \
   ${EXTRA_ARGS}

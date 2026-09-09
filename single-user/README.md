@@ -60,84 +60,31 @@ behaviour is different and is measured two sections down.
 Batch mode does 45-46 tok/s single-stream on the same prompts, and overtakes
 this mode from C8 up.
 
-**`SPEC=dflash2` — the DFlash2 block drafter (64k context)**, same protocol,
-`CTX=fast` + fast variant, W4A16 drafter from `prepare/fetch_dflash2.py`:
+**`SPEC=dflash2` — Ornith-trained block drafter (Phase 2).** The Qwen3.8-27B
+DFlash2 checkpoint cannot be used here (32 vs 64 layers, 4096 vs 5120 hidden,
+taps 5/19/33/47/61 are OOB). Train against Ornith
+([drafter/README.md](../drafter/README.md)), quantize to
+`models/Ornith-1.5-9B-DFlash2-W4A16`, then:
 
-| Cohort | decode, model-default sampling | decode, greedy | tokens per step | e2e (default / greedy) | mean TTFT |
-|---|---|---|---|---|---|
-| C1 | **121.8 tok/s** | **131.2 tok/s** | 3.12 / 3.34 | 118.6 / 127.1 | 165 ms |
-| C2 | 195.5 tok/s | 214.6 tok/s | 3.08 / 3.36 | 173.4 / 189.2 | 228 ms |
-| C4 | 278.9 tok/s | 285.7 tok/s | 3.18 / 3.22 | 240.2 / 246.7 | 342 ms |
-| C8 | 389.9 tok/s | 405.5 tok/s | 3.37 / 3.45 | 252.1 / 274.1 | 2,688 ms |
+```bash
+venv/bin/python prepare/fetch_dflash2.py      # local trained dir or DFLASH2_REPO
+SPEC=dflash2 bash single-user/start_ornith.sh
+bash bench/dflash2_vs_mtp.sh dflash2          # C1 vs MTP; labd copy suite
+```
 
-The C1 row is the best of several runs; expect 117-127 e2e depending on the session.
-Greedy repeats *within* a server session are bit-identical (four in a row: 125.0-126.6 e2e,
-same step count to the token), but the greedy text flips at near-ties between sessions and
-acceptance moves with it. If you are comparing two configurations, run both several times in
-the same session — `bench/run_benchmarks.sh single` and `bench/real_rep.sh` both print tokens
-per step, which is the stable signal.
+Keep `SPEC=mtp` as the default until those benches beat `DRAFT_TOKENS=4`.
+On 9B the extra ~1 GB drafter read is a larger fraction of step time than on
+27B; copy/quote (`LOOKUP=1`, `DFLASH_TOKENS=15`) is the likely win, chat C1
+is not promised. Do not copy 27B tok/s tables into this file.
 
-[DFlash2](https://inco.ai/blog/dflash2/) (Inco, Aug 2026;
-[incoai/Qwen3.8-27B-DFlash2](https://huggingface.co/incoai/Qwen3.8-27B-DFlash2))
-is a 5-layer block drafter that predicts 7 tokens in one non-autoregressive
-pass from the target's layer 5/19/33/47/61 hidden states, plus a path selector
-over 16 candidates per slot. It runs on vLLM's V2 model runner through
-vLLM 0.28.0's native DFlash2 support plus
-`patches/dflash2-lookup-drafting.patch` and `patches/dflash2-ngram-chains.patch` with the
-drafter requantized to W4A16 by this repo (1.19 GB instead of 3.85 GB —
-`drafter/README.md`): per step it reads ~1 GB of drafter plus an 8-token verify,
-26.5 ms vs MTP's 24.8, and accepts 3.2-3.4 tokens per step at default sampling
-(MTP: 2.8-2.9), so **+10% at C1 at default sampling, +15% greedy**, and a higher
-decode rate on every one of these cohorts except C8, where MTP's 407.3 is ahead of
-its 389.9. Read those cohorts as what they are — eight short chat prompts at a
-concurrency limit, not eight long independent sessions; the next bullet is what
-happens when the streams are big. Where it is *not* the better choice:
-
-- **More than one stream at a time**, and the cohort table above does not show it
-  because those eight prompts are 45-300 tokens each. Every resident request reserves
-  1+k = 8 recurrent-state slots — **15.8% of the 69,758-token pool**, ~0.82 GiB of its
-  pinned 5.20, before it holds one token of context — against 8.2% for MTP k=4. So seven DFlash2
-  requests are resident with 128-token prompts, five with 4k-token ones and two with
-  16k ones; the extras queue, and once the pool is full something has to be preempted
-  and recomputed to make room. Eight MTP requests fit, four of them at 16k. Measured
-  with `bench/conc_ladder.py` on distinct 4k-token prompts (each salted, so nothing is
-  served from the prefix cache), `MAX_SEQS=8`, 250 W:
-
-  | streams | 1 | 2 | 4 | 8 |
-  |---|---|---|---|---|
-  | per-stream decode tok/s | 137 | 97 | 46 | 33 |
-  | aggregate decode tok/s | 137 | 225 | 309 | *5 resident, no steady state* |
-  | ms per forward pass | 25.9 | 32.8 | 49.1 | — |
-  | MTP, same run: per-stream / aggregate | 126 / 124 | 103 / 212 | 46 / 280 | 23 / **383** |
-
-  Aggregate throughput keeps climbing and nothing is preempted, so the verify step is
-  batching; what a second user costs is *latency*. Each resident request adds ~7 ms to
-  every forward pass (MTP: ~5 ms), and MTP keeps scaling to 8 streams where DFlash2 has
-  run out of state pages at 5 — which is the whole of MTP's C8 advantage. One GPU:
-  DFlash2 if the card is yours, MTP or batch mode from the second concurrent user.
-- **Long contexts**: the drafter attends to a 2,048-token window. On a 12k /
-  36k-token summarization prompt (chat API) it accepts 2.3-2.6 tokens per step
-  against MTP's 2.6-3.0, and the drafter's own prefill adds ~15% to TTFT; end to
-  end the two are within 5-10% there, MTP ahead. Up to ~8k tokens of context,
-  which is most single-user traffic, DFlash2 wins — at one request in flight.
-- **Context length**: 64k (69,758 tokens of pool, 8 request slots), or 56k and 4 slots
-  in reproduction mode (`DFLASH_TOKENS=15`). Either way the pool is pinned by bytes
-  (`KV_MEM`, 5.2 GiB) instead of by `GPU_UTIL`: `patches/hybrid-kv-groups-v2-cudagraph.patch` stops the drafter's
-  5 sliding-window layers from padding the target's attention/GDN layers (105 →
-  78 KB of pool per token; without it this mode caps out at ~40k), and the V2
-  runner's profiled activation peak swings ~1 GiB between starts, which makes a
-  utilization-based setting non-deterministic. `CTX=huge` stays MTP (the script falls back
-  with a message). `CTX=long` doubles the context — 138,696 tokens at `DFLASH_TOKENS=7`,
-  114,224 at 15 — by moving to an `int8_per_token_head` cache on the Triton backend; it is
-  worth it only for context reproduction, and `SPEC=mtp CTX=long` beats it about 2:1 on
-  everything else. See [docs/long-context.md](../docs/long-context.md#dflash2-past-64k-specdflash2-ctxlong).
-- The V2 runner rejects the `thinking_token_budget` request parameter (HTTP
-  400); everything else we use (logprobs, prompt_logprobs, n, stop, seeds,
-  structured outputs, penalties, streaming, thinking) was checked
-  (`bench/api_smoke.py`-style run, 12/12). Quality unchanged by construction
-  (speculation is exact): perplexity 8.094, GSM8K 96.0% on the fast variant.
+Geometry: hidden 4096, taps 1/8/15/22/29 (full-attn ablation 3/11/19/27/31),
+`fc` 20480→4096, `block_size` 8, `mask_token_id` 248077, `is_causal: false`.
+The pool is sized from `GPU_UTIL` (set `KV_MEM=` only if V2 activation jitter
+returns). `draft_sample_method` is `probabilistic` (required for lossless
+sampling). WSL2: `VLLM_WSL2_ENABLE_PIN_MEMORY=1`.
 
 ### Chat with a long document: prefix caching, and drafting from the context
+
 
 Two things matter once the prompt is long and the same document comes back every turn.
 
@@ -165,6 +112,12 @@ reproduces part of a 25k document, the drafter is guessing at text that is sitti
 in the prompt. `patches/dflash2-lookup-drafting.patch` scans the request's own token history
 for the most recent occurrence of the longest suffix of what has been generated and proposes
 the tokens that followed it.
+
+> The tok/s and tokens/step tables in this lookup section were measured on the
+> **Qwen3.8-27B** fork this repo was derived from. They are not Ornith-1.5-9B
+> numbers. Re-measure with `bash bench/dflash2_vs_mtp.sh dflash2-copy` after a
+> trained `models/Ornith-1.5-9B-DFlash2-W4A16` exists. Do not quote 27B copy
+> cells (≈380 tok/s) as Ornith results.
 
 Those tokens cost the drafter nothing, which is why the verify block no longer has to be
 the drafter's block. `DFLASH_TOKENS=15` — *reproduction mode* — has the target verify 16
@@ -338,10 +291,11 @@ requantization, draft head, the fast variant via `prepare/fetch_fast_variant.py`
 patches; `bash verify.sh --no-server` checks all of it). Then:
 
 ```bash
-bash single-user/start_qwen.sh                # MTP (64k context)
-venv/bin/python prepare/fetch_dflash2.py      # once: the 1.2 GB W4A16 DFlash2 drafter
-SPEC=dflash2 bash single-user/start_qwen.sh   # DFlash2 (64k context, +10-15% at C1)
-bash bench/run_benchmarks.sh single           # reproduces the tables above
+bash single-user/start_ornith.sh                # MTP (64k context)
+venv/bin/python prepare/fetch_dflash2.py      # Ornith DFlash2 (after training)
+SPEC=dflash2 bash single-user/start_ornith.sh # DFlash2 (needs trained W4A16 drafter)
+bash bench/run_benchmarks.sh single           # MTP / DFlash2 C1 tables
+bash bench/dflash2_vs_mtp.sh dflash2          # plus copy/quote (labd)
 ```
 
 If you are the only person on the card, this is the fastest configuration here —
@@ -349,14 +303,12 @@ the block drafter, a verify block the context fills, and the document you
 already sent kept across turns:
 
 ```bash
-SPEC=dflash2 DFLASH_TOKENS=15 PREFIX_CACHE=1 bash single-user/start_qwen.sh
+SPEC=dflash2 DFLASH_TOKENS=15 PREFIX_CACHE=1 bash single-user/start_ornith.sh
 ```
 
-133 tok/s greedy on short prompts, 382 where the answer reproduces the prompt,
-0.56 s TTFT on a follow-up turn against a 25k-token document instead of 22.4 s.
-It runs 4 request slots and 56k of context instead of 8 and 64k, so it is a
-single-user setting in the literal sense; `bench/labd_bench.py` measures it and
-`bench/labd_soak.py` is the check that it stays reproducible under a batch.
+Reproduction mode: 4 request slots and 56k of context instead of 8 and 64k.
+Measure it with `bench/labd_bench.py` after a trained Ornith drafter exists;
+do not quote the 27B 382 tok/s copy cell as an Ornith number.
 
 Or in Docker (image build, model prep and the same knobs via `.env` — see the
 [docs/docker.md](../docs/docker.md)):
@@ -383,11 +335,11 @@ included (`tools` + `tool_choice: "auto"` come back as `tool_calls`).
 
 | var | default | notes |
 |---|---|---|
-| `MODEL` | `models/Qwen3.8-27B-W4A16-AutoRound-fast` if present, else the base dir | the fast variant (`prepare/fetch_fast_variant.py`) is +15% |
+| `MODEL` | `models/Ornith-1.5-9B-MixedInt4-AutoRound` | serving INT4 teacher + MTP |
 | `CTX` | `fast` | `fast`: bf16 KV / FlashAttention / 64k / 4 drafts / split-KV attention. `long`: fp8 KV / FlashInfer / 150k / 3 drafts, ~15% slower at C1, faster from C4 up. `huge`: KVarN 4/2-bit KV / 200k / 3 drafts (needs `bash kvarn/install.sh`; docs/long-context.md) — buys 1.7x the pool for **half the decode rate past ~100k** (32.0 vs 68.1 tok/s at 112k), so take it when the request would not otherwise fit, not for speed |
 | `PREFIX_CACHE` | 0 | 1 = reuse a shared prompt prefix across requests (`--enable-prefix-caching --mamba-cache-mode align`): 20x faster follow-up turns, ~16% smaller KV pool |
 | `LOOKUP` | 1 (`SPEC=dflash2`) | draft from the request's own context when it repeats itself (`patches/dflash2-lookup-drafting.patch`), and fill the verify positions the drafter's block does not reach. `VLLM_DFLASH2_LOOKUP_NMIN` (6) is the shortest suffix that may match, `_NMAX` (12) the longest — the kernel prefers the longest match and breaks ties by recency, so a higher cap makes it choose an older long match over a newer short one, which is the worse predictor — `_NSTRONG` (6) the match length trusted on its own, `_AGREE` (0) how many tokens the drafter must independently agree on for a shorter match to be taken, `_NMIN_TAIL` (4) the same for positions the drafter never proposed, `_ADAPTIVE` (1 = ask the scheduler for the long block only while a copy is running, 0 = always long), `_LONGMIN` (6) the match length that counts as a fillable tail, `_STICKY` (3) steps to hold the long block after the flag drops, with one request in flight only — copies do not end when the flag says so, and re-entry costs two steps, but the counter is batch-wide and holding it across a mixed batch makes the block length depend on when the other requests arrived — `_CHEAP_CTX` (0 = off) a context length below which the long block is taken unconditionally |
-| `SPEC` | `mtp` | `dflash2`: the DFlash2 block drafter (`prepare/fetch_dflash2.py`; `CTX=fast` or `CTX=long`, V2 model runner). `DRAFT` overrides the drafter dir, `DFLASH_TOKENS` (7) the *verify* block — the drafter always proposes the 7 it was trained for, and 15 here is reproduction mode (4 request slots, 56k context) — `DFLASH_MAX_LEN` (65536, or 57344 at `DFLASH_TOKENS=15`) the context, `KV_MEM` (5583457484 = 5.2 GiB) pins the KV pool — set `KV_MEM=` to size it from `GPU_UTIL` instead; `VLLM_DFLASH2_DRAFT_TOPK_TOPP=0` disables the proposal truncation, `VLLM_DFLASH2_TORCH_TOPK=1` avoids the FlashInfer top-k JIT |
+| `SPEC` | `mtp` | `dflash2`: Ornith DFlash2 block drafter (`prepare/fetch_dflash2.py`; V2 runner). `DRAFT` overrides the drafter dir (must be hidden 4096 / 32-layer taps). `DFLASH_TOKENS` (7) is the *verify* block — the checkpoint always proposes the 7 it was trained for; 15 is reproduction mode. Size the KV pool from `GPU_UTIL` unless you set `KV_MEM`. `VLLM_DFLASH2_DRAFT_TOPK_TOPP=0` disables proposal truncation, `VLLM_DFLASH2_TORCH_TOPK=1` avoids FlashInfer top-k JIT |
 | `DRAFT_TOKENS` | 4 (3 for `CTX=long`/`huge`) | speculative depth; 5 and 6 are slower |
 | `SPEC_ATTN` | 1 (`CTX=fast` only) | split-KV Triton attention for the verify step (`patches/spec-decode-attn.patch`); 0 = FlashAttention-2 |
 | `DRAFT_SAMPLE` | `probabilistic` | `greedy` drafts: same speed at T=0, ~15% slower at T>0 |

@@ -45,16 +45,15 @@ $V prepare/build_draft_vocab.py  models/Qwen3.8-27B-Uncensored-W4A16 \
 ```
 
 Then `MODEL=$PWD/models/Qwen3.8-27B-Uncensored-W4A16 bash single-user/start_qwen.sh`.
-`SPEC=dflash2` additionally needs its pinned pool resized, because this checkpoint is
-~1 GB heavier than the one those constants were measured on — the command and the
-numbers are in the main README, "A different checkpoint: the uncensored build".
+That leftover path is the 27B launcher. For Ornith, `SPEC=dflash2` needs
+`models/Ornith-1.5-9B-DFlash2-W4A16` from `drafter/` (not `syvai/Qwen3.8-27B-DFlash2-W4A16`).
 `--mtp-bits 4` and `--keep-fc` exist for experimenting with the draft module; the
 defaults (int8, `mtp.fc` quantized) are what was verified.
 
 The two `fetch_*` scripts only download: the fast variant is the int4-GPTQ lm_head and
-drafter plus a draft vocabulary counted over the model's own outputs (worth ~15% in
-single-user mode), and `fetch_dflash2.py` is the W4A16 DFlash2 block drafter. Both are
-rebuildable from scratch — that is what [drafter/](../drafter/) is.
+drafter plus a draft vocabulary counted over the model's own outputs, and
+`fetch_dflash2.py` installs an **Ornith** DFlash2 W4A16 dir (it refuses a 5120-d /
+64-layer Qwen 27B checkpoint). Rebuild from [drafter/](../drafter/).
 
 `bash verify.sh --no-server` checks every step above against the model dir and names
 the script to run for whatever is missing. Each in-place script backs up what it

@@ -34,8 +34,10 @@ Ornith-1.5-9B shares the same Qwen3.5 hybrid architecture as Qwen3.8-27B (`Qwen3
    — Accelerates compute-bound prefill on INT8 tensor cores with AutoRound negative scale fixes.
 9. **Hybrid prefix caching** (`--enable-prefix-caching`)
    — Reuses KV cache and resumes GDN recurrent state across turns for coding agent workflows.
-10. **Phased approach for DFlash2**
-   — DFlash2 is deferred to Phase 2 because the Qwen3.8 drafter targets 64 layers (extracting hidden states at layers 5, 19, 33, 47, 61), whereas Ornith has 32 layers. Native MTP has lower relative overhead on 9B and targets **~150–190+ tok/s**.
+10. **DFlash2 (`SPEC=dflash2`)**
+   — Train a new 5-layer block drafter on Ornith (taps 1/8/15/22/29, hidden 4096,
+   `fc` 20480→4096, `mask_token_id` 248077). The Qwen3.8-27B drafter cannot load.
+   Native MTP ($k=4$) stays the default until C1 benches win. See [drafter/README.md](../drafter/README.md).
 
 ## In Full
 
@@ -137,50 +139,30 @@ Things this campaign measured that did NOT pay, so nobody re-walks them:
   first forward — an inductor codegen bug with the mixed set on this
   torch/vllm pin. Use `mlp` or the full default.
 
-### DFlash2 (`SPEC=dflash2`, Phase 2)
+### DFlash2 (`SPEC=dflash2`)
 
-> [!NOTE]
-> **Phase 1 vs. Phase 2 (DFlash2 on Ornith-1.5-9B)**:
-> The existing `syvai/Qwen3.8-27B-DFlash2-W4A16` drafter cannot be used with Ornith-1.5-9B because it was trained to consume hidden states from layers 5/19/33/47/61 of the 64-layer 27B model, whereas Ornith-1.5-9B has only 32 layers.
-> On a 9B target, drafter overhead is proportionally much larger, so native MTP ($k=3/4$) with INT4 AutoRound weights and INT8 logits is expected to achieve ~150–190+ tok/s. Training an Ornith-specific DFlash2 drafter via vLLM `speculators` is planned as a Phase 2 extension. The reference notes below document how DFlash2 integration was engineered on this stack.
+> The `syvai/Qwen3.8-27B-DFlash2-W4A16` drafter cannot be used with Ornith-1.5-9B:
+> it consumes hidden states from layers 5/19/33/47/61 of a 64-layer / 5120-d model.
+> Train an Ornith drafter with NeMo `TrainDFlash2Recipe` (`drafter/ornith_dflash2.yaml`),
+> teacher = the serving INT4 checkpoint, then GPTQ with `capture_dflash2.py` /
+> `quant_dflash2.py`. `mask_token_id` is **248077**, not 248070 (`<|audio_start|>`).
+> Layer-tap ablation if GDN aux hiddens are empty: `[3, 11, 19, 27, 31]`.
+> Gate merge on tok/step vs MTP k=4 (`bench/dflash2_vs_mtp.sh`), not on boot.
 
-The one lever left after all of the above is acceptance, and Qwen's MTP head
-is a single-layer chain drafter at its ceiling. [DFlash2](https://inco.ai/blog/dflash2/)
-(Inco, Aug 2026) is a different drafter for this exact target:
-5 Qwen3-style layers that predict the whole 7-token block in one
-non-autoregressive pass from the target's layer hidden states,
-plus a selector that walks a coherent path through 16 candidates per slot. On
-the bf16 model it reports 4.80 tokens per step vs 4.28 for MTP at the same block
-size. What it took to make it pay on a 24 GB card, in order:
+The Qwen MTP head is a single-layer chain drafter. [DFlash2](https://inco.ai/blog/dflash2/)
+is a 5-layer Qwen3-style block drafter that predicts 7 tokens in one
+non-autoregressive pass from selected target hidden states, plus a selector
+over 16 candidates per slot. Serving uses vLLM 0.28 native DFlash2 on the V2
+runner plus `patches/dflash2-lookup-drafting.patch` and
+`patches/dflash2-ngram-chains.patch`. Hessian capture reads module widths from
+the checkpoint (not 27B 5120/25600 literals). Leave convs, selector, and norms
+in bf16. Do not blend `ctx_kv` into k/v Hessians.
 
-1. **Native support plus the repo port.** vLLM's support is [PR #52816](https://github.com/vllm-project/vllm/pull/52816)
-   and is native in v0.28.0 on the V2 model runner. The old
-   `patches/dflash2-backport.patch` is retired on this tag; v0.28.0's native
-   implementation is layered with `patches/dflash2-lookup-drafting.patch` and
-   `patches/dflash2-ngram-chains.patch`, which carry the quantized candidate
-   head, context lookup, and drafter-free chain extensions. The DFlash2 port
-   also shares the target's *quantized* lm_head (upstream refuses), and the V2
-   sampler now takes our sort-free small-k top-k/top-p path. MTP mode is untouched (re-measured:
-   110.7 / 113.4 tok/s, 73,777-token pool).
-2. **The drafter itself is 1.92B parameters, 3.85 GB in bf16** — read once per
-   step, that is +5 ms on a 3090 and no gain (106 / 112 tok/s, measured), and it
-   leaves a 21k-token KV pool. `drafter/capture_dflash2.py` hooks the drafter's
-   own linear layers inside vLLM on 400 real prompts (~290k rows per layer, plus
-   the context-KV precompute's input distribution for the k/v rows) and
-   `drafter/quant_dflash2.py` GPTQ-quantizes the 36 matrices to W4A16
-   compressed-tensors (Marlin): **1.19 GB**, shipped as
-   [syvai/Qwen3.8-27B-DFlash2-W4A16](https://huggingface.co/syvai/Qwen3.8-27B-DFlash2-W4A16)
-   (`prepare/fetch_dflash2.py`). int4 costs ~5% acceptance at default sampling (3.2 vs
-   3.4 tokens per step) and nothing at greedy; keeping `fc` in bf16 did not
-   recover it.
-3. **Result** (`bench/run_benchmarks.sh single`, fast variant target): 26.5 ms
-   per step vs MTP's 24.8, 3.14-3.34 tokens per step vs 2.8-2.9 → **117.8 tok/s
-   at default sampling and 125.7 greedy at C1** (MTP: 111-115 / 115-124), with
-   the best runs of this drafter reading 133.8 / 138.5, and a higher decode rate
-   at C2-C8. Same output distribution by construction (perplexity 8.094,
-   GSM8K 96.0-96.5%).
+On 9B the drafter is a larger fraction of step time than on 27B; chat C1 is
+not assumed to win. Copy/quote with `LOOKUP=1` and `DFLASH_TOKENS=15` is the
+workload that uses a verify block the context can fill for free.
 
-4. **Getting the context back to 64k** took a second patch
+### Hybrid KV groups (64k with a 5-layer SWA drafter)
    (`patches/hybrid-kv-groups-v2-cudagraph.patch`), because the first version of
    this mode capped out at 40k. vLLM sizes a hybrid model's KV groups by the
    *smallest* bucket of same-type layers — with the drafter that is its 5

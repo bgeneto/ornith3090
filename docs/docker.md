@@ -22,7 +22,9 @@ docker compose --profile single up -d               # or --profile batch
 docker compose logs -f single
 ```
 
-The example enables the repo's recommended single-user DFlash2 profile. On
+The example enables the repo's recommended single-user **MTP** profile
+(`SPEC=mtp`, `DRAFT_TOKENS=4`). `SPEC=dflash2` is Phase 2 after an Ornith
+drafter exists at `models/Ornith-1.5-9B-DFlash2-W4A16`. On
 Docker Desktop with WSL2, leave `VLLM_WSL2_ENABLE_PIN_MEMORY=1` enabled; it is
 required by the V2 runner before model loading begins. The detailed failure
 signature and other WSL2 workarounds are below.

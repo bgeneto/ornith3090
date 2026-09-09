@@ -1,6 +1,7 @@
 # Ornith-1.5-9B on one RTX 3090, containerized.
 #
-#   docker compose --profile single up -d     # low latency: MTP speculative decoding
+#   docker compose --profile single up -d     # low latency: MTP speculative decoding (default)
+#   SPEC=dflash2 …                           # after models/Ornith-1.5-9B-DFlash2-W4A16 exists
 #   docker compose --profile batch  up -d     # throughput
 #   docker compose run --rm prepare           # download + requantize Ornith-1.5-9B
 #   docker compose run --rm single verify     # verify.sh inside the container
@@ -37,6 +38,8 @@ x-ornith: &ornith
     - ./single-user:/app/single-user
     - ./batch:/app/batch
     - ./prepare:/app/prepare
+    - ./drafter:/app/drafter
+    - ./bench:/app/bench
     - ./verify.sh:/app/verify.sh
     - ornith-cache:/cache
 

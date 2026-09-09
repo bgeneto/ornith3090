@@ -1,0 +1,82 @@
+# DFlash 2 draft training for Ornith-1.5-9B (online target hidden-state capture).
+#
+# Ornith-1.5-9B is Qwen3_5ForConditionalGeneration (32 layers, hidden 4096, hybrid
+# GDN). The Qwen3.8-27B yaml (taps 5/19/33/47/61, hidden 5120, mask 248070) does
+# not apply: those layer ids are out of range and 248070 is <|audio_start|> here.
+#
+# Draft is a slim Qwen3 stack (5 sliding-window layers, head_dim 128) with DFlash2
+# conv + candidate selector. Train against the serving INT4 teacher so aux hiddens
+# match inference.
+#
+# Regenerate responses with Ornith before training:
+#   venv/bin/python drafter/collect_prompts.py
+#   VLLM_MARLIN_INPUT_DTYPE=int8 VLLM_MARLIN_INT8_INCLUDE_RE=mlp venv/bin/python drafter/gen_data.py
+#   venv/bin/python drafter/convert_gen_to_chat.py
+#
+# Cloud (2-4x A100/H100):
+#   torchrun --standalone --nproc_per_node=2 \
+#     -m nemo_automodel.recipes.llm.train_dflash2 \
+#     -c drafter/ornith_dflash2.yaml
+#
+# 3090 smoke: drafter/ornith_dflash2_smoke.yaml (see drafter/train_dflash2.sh).
+# Full-attn taps: drafter/ornith_dflash2_fullattn.yaml
+
+recipe: TrainDFlash2Recipe
+
+dist_env:
+  backend: nccl
+  timeout_minutes: 30
+
+distributed:
+  strategy: fsdp2
+  tp_size: 2
+
+recipe_args:
+  target_model_name_or_path: models/Ornith-1.5-9B-MixedInt4-AutoRound
+  train_data_path: drafter/data/chat.jsonl
+  val_data_path: null
+  output_dir: ./drafter/runs/dflash2_ornith
+  seq_length: 3072
+  micro_batch_size: 1
+  grad_accumulation_steps: 8
+  num_workers: 4
+  num_epochs: 1
+
+  draft_num_hidden_layers: 5
+  block_size: 8
+  num_anchors: 64
+  loss_decay_gamma: 4.0
+  mask_token_id: 248077
+  target_layer_ids: [1, 8, 15, 22, 29]  # paper-uniform; ablation [3, 11, 19, 27, 31]
+  attention_backend: flex_attention
+  draft_sliding_window: 2048
+  # FFN width inherits the teacher's intermediate_size (12288 on Ornith-1.5-9B).
+  # Draft is a slim Qwen3 stack; is_causal must stay false (DFlash2, not DFlash1).
+
+  draft_num_attention_heads: 32
+  draft_num_key_value_heads: 8
+  draft_head_dim: 128
+
+  conv_kernel_size: 2
+  conv_group_size: 16
+  selector_rank: 256
+  selector_top_k: 16
+  selector_loss_weight: 1.0
+
+  trust_remote_code: true
+  shuffle_seed: 42
+  log_every_steps: 10
+  max_grad_norm: 1.0
+
+optimizer:
+  lr: 6.0e-4
+  betas: [0.9, 0.95]
+  weight_decay: 0.0
+  warmup_ratio: 0.04
+  min_lr_ratio: 0.1
+
+checkpoint:
+  enabled: true
+  checkpoint_dir: ./drafter/runs/dflash2_ornith/checkpoints
+  model_save_format: safetensors
+  save_consolidated: true
