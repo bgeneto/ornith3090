@@ -101,20 +101,35 @@ def fail(m):
     print("  FAIL ", m); F += 1
 # lm_head / embed
 quant_method = qc.get("quant_method", "")
+mixed = [k for k in idx if k.endswith("weight_packed") and (
+    k.startswith("lm_head.") or k.endswith("embed_tokens.weight_packed") or "draft_lm_head" in k
+)]
 if quant_method == "auto-round":
-    if "lm_head.weight" in idx:
-        ok("lm_head in BF16 (native AutoRound format, full precision)")
-    elif "lm_head.weight_packed" in idx:
-        fail("lm_head has weight_packed which is incompatible with AutoRound quant_method")
+    if mixed:
+        fail("compressed-tensors weight_packed on AutoRound (vLLM INC wants qweight): "
+             + ", ".join(mixed) + " — restore .bak* and re-run prepare/quant_lm_head.py / quant_embed.py")
+    has_lm8 = qc.get("extra_config", {}).get("lm_head", {}).get("bits") == 8
+    if "lm_head.qweight" in idx and has_lm8:
+        ok("lm_head requantized to AutoGPTQ int8 (prepare/quant_lm_head.py)")
+    elif "lm_head.qweight" in idx:
+        fail("lm_head.qweight present but extra_config.lm_head.bits is not 8")
+    elif "lm_head.weight" in idx:
+        fail("lm_head still BF16: run prepare/quant_lm_head.py (writes qweight, not weight_packed)")
     else:
-        fail("lm_head.weight missing from index")
+        fail("lm_head.qweight / lm_head.weight missing from index")
 
-    if any(k.endswith("embed_tokens.weight") for k in idx):
-        ok("embed_tokens in BF16 (native AutoRound format)")
-    elif any(k.endswith("embed_tokens.weight_packed") for k in idx):
-        fail("embed_tokens has weight_packed which is incompatible with AutoRound quant_method")
+    emb_q = any(k.endswith("embed_tokens.qweight") for k in idx)
+    emb_w = any(k.endswith("embed_tokens.weight") for k in idx)
+    has_emb8 = any("embed_tokens" in k and isinstance(v, dict) and v.get("bits") == 8
+                   for k, v in qc.get("extra_config", {}).items())
+    if emb_q and has_emb8:
+        ok("embed_tokens requantized to AutoGPTQ int8 (prepare/quant_embed.py)")
+    elif emb_q:
+        fail("embed_tokens.qweight present but extra_config has no embed_tokens bits=8")
+    elif emb_w:
+        fail("embed_tokens still BF16: run prepare/quant_embed.py (writes qweight; needs patches/inc-gptq-embed.patch)")
     else:
-        fail("embed_tokens missing from index")
+        fail("embed_tokens.qweight / embed_tokens.weight missing from index")
 else:
     has_lm_group = any(g.get("targets") == ["re:.*lm_head$"] and g.get("weights", {}).get("num_bits") == 8 for g in groups.values()) or qc.get("extra_config", {}).get("lm_head", {}).get("bits") == 8
     if "lm_head.weight_packed" in idx and has_lm_group: ok("lm_head requantized to int8 (prepare/quant_lm_head.py)")
@@ -128,7 +143,8 @@ mtp_quant = ("mtp.layers.0.mlp.down_proj.weight_packed" in idx and "mtp.layers.0
 if mtp_quant: ok("MTP draft module quantized (INT4 AutoRound/GPTQ)")
 else: print("  WARN  MTP module still bf16 (prepare/quant_mtp.py) — single-user mode is slower without it")
 
-if "mtp.draft_lm_head.weight_packed" in idx and os.path.exists(d + "mtp_draft_vocab_ids.pt"):
+if (("mtp.draft_lm_head.weight_packed" in idx or "mtp.draft_lm_head.qweight" in idx)
+        and os.path.exists(d + "mtp_draft_vocab_ids.pt")):
     ok("40k-token draft head present (prepare/build_draft_vocab.py)")
 else:
     ok("MTP drafts with full shared lm_head (native exact speculation)")

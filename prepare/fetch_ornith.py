@@ -5,7 +5,7 @@ Usage:
   # default: Pilcothink/Ornith-1.5-9B-MixedInt4-AutoRound -> models/Ornith-1.5-9B-MixedInt4-AutoRound
 
 Downloads ~8.8 GB of weights (2 base shards + extra tensors + tokenizer/config files).
-After download, requantize the untied heads to INT8:
+After download, requantize the untied heads to AutoGPTQ int8 (qweight, not weight_packed):
   venv/bin/python prepare/quant_lm_head.py models/Ornith-1.5-9B-MixedInt4-AutoRound
   venv/bin/python prepare/quant_embed.py   models/Ornith-1.5-9B-MixedInt4-AutoRound
   venv/bin/python prepare/build_draft_vocab.py models/Ornith-1.5-9B-MixedInt4-AutoRound --ids prepare/draft_vocab_ids.json

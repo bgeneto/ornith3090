@@ -5,6 +5,13 @@ has its body linears and MTP layer quantized, but leaves `lm_head` and `embed_to
 These scripts optimize the model in place on the CPU, reclaiming ~2.0 GB of VRAM and accelerating generation.
 `docker compose run --rm prepare` runs them automatically.
 
+On AutoRound checkpoints (`quant_method: auto-round`) the scripts write AutoGPTQ
+tensors (`qweight` / `scales` / `qzeros` / `g_idx`). Compressed-tensors
+`weight_packed` is incompatible with vLLM INC and will fail the loader;
+`verify.sh` now FAILs that mixed state instead of treating `weight_packed` as
+success. `embed_tokens` also needs `patches/inc-gptq-embed.patch`. Other
+(compressed-tensors) checkpoints still get `weight_packed` as before.
+
 Run from the repo root, in order — `quant_lm_head.py` first, because `build_draft_vocab.py` slices its rows:
 
 ```bash

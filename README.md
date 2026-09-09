@@ -724,7 +724,7 @@ HF_HUB_ENABLE_HF_TRANSFER=1 venv/bin/hf download \
   --local-dir models/Ornith-1.5-9B-MixedInt4-AutoRound
 # or use: venv/bin/python prepare/fetch_ornith.py
 
-# requantize lm_head + embeddings to INT8 (CPU only, a couple of minutes)
+# requantize lm_head + embeddings to AutoGPTQ int8 (CPU only; writes qweight, not weight_packed)
 venv/bin/python prepare/quant_lm_head.py models/Ornith-1.5-9B-MixedInt4-AutoRound
 venv/bin/python prepare/quant_embed.py   models/Ornith-1.5-9B-MixedInt4-AutoRound
 venv/bin/python prepare/quant_mtp.py     models/Ornith-1.5-9B-MixedInt4-AutoRound

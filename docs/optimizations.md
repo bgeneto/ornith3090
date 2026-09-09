@@ -18,8 +18,8 @@ Ornith-1.5-9B shares the same Qwen3.5 hybrid architecture as Qwen3.8-27B (`Qwen3
 
 1. **Both embedding matrices requantized to INT8** (`prepare/quant_lm_head.py`, `prepare/quant_embed.py`)
    — The base checkpoint leaves two ~2.03 GB BF16 matrices (`lm_head` and `embed_tokens`). Requantizing both to INT8 group-128 recovers **~2.03 GB VRAM** and directly reduces generation latency on the 248k-way logits projection.
-2. **Quantized embedding patch** (`patches/qwen3_5-embed-quant.patch`)
-   — Wires vLLM's dequant-on-gather kernel into `Qwen3_5ForConditionalGeneration` so it actually uses INT8 `embed_tokens`.
+2. **Quantized embedding patches** (`patches/qwen3_5-embed-quant.patch`, `patches/inc-gptq-embed.patch`)
+   — Wires `quant_config` into `Qwen3_5ForConditionalGeneration` so it actually uses INT8 `embed_tokens`, and teaches vLLM INC to gather AutoGPTQ `qweight` (stock 0.28.0 only does that for `ParallelLMHead`).
 3. **16-bit GDN recurrent state** (`--mamba-ssm-cache-dtype float16`)
    — Halves recurrent memory traffic and footprint across 24 DeltaNet layers while preserving perplexity.
 4. **Native MTP speculative decoding ($k=3/4$)**
@@ -44,8 +44,8 @@ Ornith-1.5-9B shares the same Qwen3.5 hybrid architecture as Qwen3.8-27B (`Qwen3
    - `model.language_model.embed_tokens.weight` (~2.03 GB BF16)
    - `lm_head.weight` (~2.03 GB BF16)
    Totaling ~4.07 GB. `prepare/quant_lm_head.py` and `prepare/quant_embed.py` convert both to INT8 group-128 in place, saving **~2.03 GB VRAM**. Crucially, quantizing `lm_head` also speeds up decode steps because the large 248k projection occurs on every generated token.
-2. **Quantized embedding patch.**
-   vLLM provides an optimized dequant-on-gather kernel for quantized embedding tables, but `qwen3_5.py` did not connect it. `patches/qwen3_5-embed-quant.patch` hooks this up cleanly.
+2. **Quantized embedding patches.**
+   vLLM provides an optimized dequant-on-gather kernel for quantized embedding tables, but `qwen3_5.py` did not connect it. `patches/qwen3_5-embed-quant.patch` hooks this up for compressed-tensors `weight_packed`. AutoRound checkpoints write AutoGPTQ `qweight` instead, which needs `patches/inc-gptq-embed.patch` so INC actually builds a quantized `VocabParallelEmbedding`.
 3. **16-bit GDN recurrent state.**
    24 of Ornith's 32 layers are Gated DeltaNet with fixed recurrent state per sequence. Stock configuration requests FP32 (`"mamba_ssm_dtype": "float32"`). Using `--mamba-ssm-cache-dtype float16` cuts the memory footprint and bandwidth in half with identical perplexity.
 4. **W4A8 / INT8 tensor cores for GEMMs with AutoRound fixes.**

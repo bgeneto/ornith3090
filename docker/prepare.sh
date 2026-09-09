@@ -12,34 +12,30 @@ export PATH=/app/venv/bin:$PATH
 BASE=${BASE_MODEL_DIR:-/app/models/Ornith-1.5-9B-MixedInt4-AutoRound}
 HF_REPO=${HF_REPO:-Pilcothink/Ornith-1.5-9B-MixedInt4-AutoRound}
 
-# If corrupted compressed-tensors head packings are present from previous runs, restore pristine AutoRound files:
+# Index can list lm_head.weight while the shard still has weight_packed (a
+# previous restore copied bak-quant but not the 5 GB .bak). Peek the shard
+# header, not just the index.
 python - "$BASE" <<'EOF'
-import os, sys, shutil, json
+import os, sys, json
+sys.path.insert(0, "/app/prepare")
+sys.path.insert(0, os.path.join(os.getcwd(), "prepare"))
+from checkpoint_io import autoround_needs_bf16_restore, restore_autoround_bf16
 d = sys.argv[1].rstrip("/") + "/"
+cfg_path = os.path.join(d, "config.json")
 idx_path = os.path.join(d, "model.safetensors.index.json")
-if os.path.exists(idx_path):
+if os.path.exists(cfg_path) and os.path.exists(idx_path):
     try:
-        idx = json.load(open(idx_path)).get("weight_map", {})
-        if "lm_head.weight_packed" in idx:
-            print("prepare: detected incompatible lm_head.weight_packed for AutoRound; restoring pristine files...")
-            for src, dst in [
-                ("config.json.bak-quant", "config.json"),
-                ("model.safetensors.index.json.bak-quant", "model.safetensors.index.json"),
-                ("model-00001-of-00002.safetensors.bak", "model-00001-of-00002.safetensors"),
-                ("model_extra_tensors.safetensors.bak-draft", "model_extra_tensors.safetensors"),
-            ]:
-                src_f = os.path.join(d, src)
-                dst_f = os.path.join(d, dst)
-                if os.path.exists(src_f):
-                    shutil.copy2(src_f, dst_f)
-                    print(f"  restored {dst}")
-            for rm_f in ["mtp_draft_vocab_ids.pt", "model-00001-of-00002.safetensors.bak_embed"]:
-                p = os.path.join(d, rm_f)
-                if os.path.exists(p):
-                    os.remove(p)
-            print("prepare: restore complete.")
+        qc = json.load(open(cfg_path)).get("quantization_config", {})
+        idx = json.load(open(idx_path))
+        if qc.get("quant_method") == "auto-round":
+            why = autoround_needs_bf16_restore(d, idx)
+            if why:
+                print(f"prepare: restoring AutoRound BF16 backups ({why})")
+                restore_autoround_bf16(d)
+                print("prepare: restore complete.")
     except Exception as e:
         print(f"prepare: restore check warning: {e}")
+        import traceback; traceback.print_exc()
 EOF
 
 state() {  # prints the steps still to do
@@ -62,18 +58,22 @@ if not os.path.exists(d + "model_extra_tensors.safetensors"):
 c = json.load(open(d + "config.json"))
 qc = c.get("quantization_config", {})
 quant_method = qc.get("quant_method", "")
-# AutoRound models (like Pilcothink/Ornith-1.5-9B-MixedInt4-AutoRound) keep lm_head
-# and embed_tokens in BF16. Compressed-tensors pack-quantization is incompatible with
-# vLLM's AutoRoundConfig.
-if quant_method != "auto-round":
+# AutoRound: INT8 heads must be AutoGPTQ (qweight). compressed-tensors
+# weight_packed is restored above and must not be rewritten.
+# Other checkpoints keep the original pack-quantized recipe.
+if quant_method == "auto-round":
+    if "lm_head.qweight" not in idx: todo.append("lm_head")
+    if not any(k.endswith("embed_tokens.qweight") for k in idx): todo.append("embed")
+else:
     if "lm_head.weight_packed" not in idx: todo.append("lm_head")
     if not any(k.endswith("embed_tokens.weight_packed") for k in idx): todo.append("embed")
-    if ("mtp.layers.0.mlp.down_proj.weight_packed" not in idx and
-        "mtp.layers.0.mlp.down_proj.qweight" not in idx and
-        "mtp.layers.0.mlp.down_proj.weight" in idx):
-        todo.append("mtp")
-    if "mtp.draft_lm_head.weight_packed" not in idx or not os.path.exists(d + "mtp_draft_vocab_ids.pt"):
-        todo.append("draft")
+if ("mtp.layers.0.mlp.down_proj.weight_packed" not in idx and
+    "mtp.layers.0.mlp.down_proj.qweight" not in idx and
+    "mtp.layers.0.mlp.down_proj.weight" in idx):
+    todo.append("mtp")
+if (("mtp.draft_lm_head.weight_packed" not in idx and "mtp.draft_lm_head.qweight" not in idx)
+        or not os.path.exists(d + "mtp_draft_vocab_ids.pt")):
+    todo.append("draft")
 
 if os.environ.get("FAST_VARIANT", "0") != "0" and not os.path.exists(d[:-1] + "-fast/model.safetensors.index.json"):
     todo.append("fast")

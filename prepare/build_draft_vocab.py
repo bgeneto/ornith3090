@@ -106,25 +106,11 @@ else:
     ids = sorted(set(ids) | special)
     print(f"final draft vocab with special tokens: {len(ids)} ids")
 
-# slice lm_head rows
+# slice lm_head rows (AutoGPTQ qweight, or compressed-tensors weight_packed)
 idx = json.load(open(d + "model.safetensors.index.json"))
 wm = idx["weight_map"]
-head_shard = wm["lm_head.weight_packed"]
-with safe_open(d + head_shard, framework="pt") as f:
-    wp = f.get_tensor("lm_head.weight_packed")   # [vocab, K/8] int32
-    ws = f.get_tensor("lm_head.weight_scale")    # [vocab, K/group]
-    shape = f.get_tensor("lm_head.weight_shape")
 ids_t = torch.tensor(ids, dtype=torch.int64)
-sub_p = wp.index_select(0, ids_t).contiguous()
-sub_s = ws.index_select(0, ids_t).contiguous()
-sub_shape = torch.tensor([len(ids), int(shape[1])], dtype=torch.int64)
-print(f"draft head: packed {tuple(sub_p.shape)} {sub_p.dtype}, scales {tuple(sub_s.shape)} {sub_s.dtype}, "
-      f"{(sub_p.numel()*4 + sub_s.numel()*2)/1e6:.0f} MB")
-
 extra = "model_extra_tensors.safetensors"
-# The three quant_*.py scripts leave the base model's extras in this file; a
-# single-shard export processed by prepare/quant_heads_stream.py has no extras
-# file at all (#37) -- the draft head becomes its first content.
 tensors = {}
 meta = None
 if os.path.exists(d + extra):
@@ -134,12 +120,56 @@ if os.path.exists(d + extra):
             tensors[k] = f.get_tensor(k)
     if not os.path.exists(d + extra + ".bak-draft"):
         shutil.copy(d + extra, d + extra + ".bak-draft")
-tensors["mtp.draft_lm_head.weight_packed"] = sub_p
-tensors["mtp.draft_lm_head.weight_scale"] = sub_s
-tensors["mtp.draft_lm_head.weight_shape"] = sub_shape
+
+if "lm_head.qweight" in wm:
+    head_shard = wm["lm_head.qweight"]
+    with safe_open(d + head_shard, framework="pt") as f:
+        qw = f.get_tensor("lm_head.qweight")   # [K/pack, V]
+        sc = f.get_tensor("lm_head.scales")    # [K/group, V]
+        gi = f.get_tensor("lm_head.g_idx") if "lm_head.g_idx" in f.keys() else None
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from gptq_pack import pack_constant_qzeros
+    sub_w = qw.index_select(1, ids_t).contiguous()
+    sub_s = sc.index_select(1, ids_t).contiguous()
+    n_groups = int(sub_s.shape[0])
+    sub_z = pack_constant_qzeros(len(ids), n_groups, bits=8)
+    tensors["mtp.draft_lm_head.qweight"] = sub_w
+    tensors["mtp.draft_lm_head.scales"] = sub_s
+    tensors["mtp.draft_lm_head.qzeros"] = sub_z
+    if gi is not None:
+        tensors["mtp.draft_lm_head.g_idx"] = gi.contiguous()
+    print(f"draft head (AutoGPTQ): qweight {tuple(sub_w.shape)} {sub_w.dtype}, "
+          f"scales {tuple(sub_s.shape)} {sub_s.dtype}, "
+          f"{(sub_w.numel()*4 + sub_s.numel()*2)/1e6:.0f} MB")
+    for s in ("qweight", "scales", "qzeros") + (("g_idx",) if gi is not None else ()):
+        wm[f"mtp.draft_lm_head.{s}"] = extra
+    cfg_path = d + "config.json"
+    if os.path.exists(cfg_path):
+        cfg = json.load(open(cfg_path))
+        extra_cfg = cfg.setdefault("quantization_config", {}).setdefault("extra_config", {})
+        extra_cfg["draft_lm_head"] = {"bits": 8, "group_size": 128, "sym": True}
+        json.dump(cfg, open(cfg_path, "w"), indent=2)
+else:
+    head_shard = wm["lm_head.weight_packed"]
+    with safe_open(d + head_shard, framework="pt") as f:
+        wp = f.get_tensor("lm_head.weight_packed")   # [vocab, K/8] int32
+        ws = f.get_tensor("lm_head.weight_scale")    # [vocab, K/group]
+        shape = f.get_tensor("lm_head.weight_shape")
+    sub_p = wp.index_select(0, ids_t).contiguous()
+    sub_s = ws.index_select(0, ids_t).contiguous()
+    sub_shape = torch.tensor([len(ids), int(shape[1])], dtype=torch.int64)
+    print(f"draft head: packed {tuple(sub_p.shape)} {sub_p.dtype}, scales {tuple(sub_s.shape)} {sub_s.dtype}, "
+          f"{(sub_p.numel()*4 + sub_s.numel()*2)/1e6:.0f} MB")
+    tensors["mtp.draft_lm_head.weight_packed"] = sub_p
+    tensors["mtp.draft_lm_head.weight_scale"] = sub_s
+    tensors["mtp.draft_lm_head.weight_shape"] = sub_shape
+    for s in ("weight_packed", "weight_scale", "weight_shape"):
+        wm[f"mtp.draft_lm_head.{s}"] = extra
+
+# The three quant_*.py scripts leave the base model's extras in this file; a
+# single-shard export processed by prepare/quant_heads_stream.py has no extras
+# file at all (#37) -- the draft head becomes its first content.
 save_file(tensors, d + extra, metadata=meta or {"format": "pt"})
-for s in ("weight_packed", "weight_scale", "weight_shape"):
-    wm[f"mtp.draft_lm_head.{s}"] = extra
 json.dump(idx, open(d + "model.safetensors.index.json", "w"), indent=2)
 torch.save(ids_t, d + "mtp_draft_vocab_ids.pt")
 print("done")

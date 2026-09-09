@@ -1,0 +1,90 @@
+Let vLLM INC serve a GPTQ-quantized VocabParallelEmbedding (embed_tokens).
+
+Stock 0.28.0 only hands AutoGPTQ to LinearBase and ParallelLMHead. embed_tokens
+therefore stays UnquantizedEmbeddingMethod and crashes if the checkpoint has
+qweight instead of .weight. Three hunks:
+
+  1. INCConfig.get_quant_method — also dispatch a quantized
+     VocabParallelEmbedding (exact type, not ParallelLMHead).
+  2. INCLinearMethod.embedding — dequant-on-gather over the GPTQ layout.
+  3. Skip Marlin repack for that layer so the gather still sees qweight
+     packed along the input dim.
+
+lm_head is unchanged (ParallelLMHead still goes through Marlin GEMM).
+
+Apply from the installed vllm package directory:
+  patch -p1 -d venv/lib/python3.12/site-packages/vllm < patches/inc-gptq-embed.patch
+
+Validated against vLLM 0.28.0. Reapply after upgrades.
+
+--- a/model_executor/layers/quantization/inc/inc_linear.py
++++ b/model_executor/layers/quantization/inc/inc_linear.py
+@@ -45,3 +45,23 @@
+         bias: torch.Tensor | None = None,
+     ) -> torch.Tensor:
+         return self.scheme.apply_weights(layer, x, bias)
++
++    def embedding(self, layer: torch.nn.Module, x: torch.Tensor) -> torch.Tensor:
++        # syv: dequant-on-gather for a GPTQ-packed vocab table. Marlin repack
++        # is skipped for VocabParallelEmbedding (inc_wna16_linear.py), so
++        # qweight is still [K/pack, V].
++        cfg = getattr(self.scheme, "layer_config", None)
++        bits = getattr(cfg, "bits", 8)
++        group = getattr(cfg, "group_size", 128)
++        pack = 32 // bits
++        zp = 1 << (bits - 1)
++        maxq = (1 << bits) - 1
++        ids = x.reshape(-1)
++        qw = layer.qweight.index_select(1, ids)
++        sc = layer.scales.index_select(1, ids).float()
++        shifts = torch.arange(pack, device=qw.device, dtype=torch.int32) * bits
++        q = (
++            (qw.unsqueeze(1) >> shifts.view(1, pack, 1)) & maxq
++        ).reshape(-1, ids.numel()).float() - zp
++        w = (q * sc.repeat_interleave(group, dim=0)).to(layer.scales.dtype)
++        return w.t().reshape(*x.shape, -1)
+--- a/model_executor/layers/quantization/inc/inc.py
++++ b/model_executor/layers/quantization/inc/inc.py
+@@ -19,7 +19,10 @@
+     QuantizationConfig,
+     QuantizationMethods,
+ )
+-from vllm.model_executor.layers.vocab_parallel_embedding import ParallelLMHead
++from vllm.model_executor.layers.vocab_parallel_embedding import (
++    ParallelLMHead,
++    VocabParallelEmbedding,
++)
+ 
+ from .config_parser import INCConfigParser
+ 
+@@ -243,7 +246,11 @@
+         )
+ 
+         scheme = resolve_scheme(layer_config)
+-        if isinstance(layer, (LinearBase, ParallelLMHead)):
++        # syv: GPTQ embed_tokens (prepare/quant_embed.py AutoRound path).
++        # type() so ParallelLMHead (a subclass) keeps the existing branch.
++        if isinstance(layer, (LinearBase, ParallelLMHead)) or type(
++            layer
++        ) is VocabParallelEmbedding:
+             return scheme.get_linear_method(self, layer, prefix, layer_config)
+         if isinstance(layer, RoutedExperts):
+             return scheme.get_moe_method(self, layer, prefix, layer_config)
+--- a/model_executor/layers/quantization/inc/schemes/inc_wna16_linear.py
++++ b/model_executor/layers/quantization/inc/schemes/inc_wna16_linear.py
+@@ -146,6 +146,15 @@
+         )
+ 
+     def process_weights_after_loading(self, layer: "torch.nn.Module") -> None:
++        # syv: keep the GPTQ on-disk layout for VocabParallelEmbedding so
++        # INCLinearMethod.embedding can gather columns of qweight. ParallelLMHead
++        # is a subclass and still needs the Marlin GEMM repack.
++        from vllm.model_executor.layers.vocab_parallel_embedding import (
++            VocabParallelEmbedding,
++        )
++
++        if type(layer) is VocabParallelEmbedding:
++            return
+         return self.inner_method.process_weights_after_loading(layer)
+ 
+     def apply_weights(
