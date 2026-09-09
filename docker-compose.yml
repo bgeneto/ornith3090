@@ -9,8 +9,9 @@
 # and any of the start-script variables (CTX, KV, MAX_LEN, MAX_SEQS, GPU_UTIL,
 # DRAFT_TOKENS, EXTRA_ARGS, ...) — .env is passed straight into the container.
 #
-# PORT and MODELS_DIR are read here: models live in ./models by default
-# (the same layout as the venv install, so both can share one download).
+# PORT, MODELS_DIR, and NVIDIA_GPU are read here: models live in ./models by
+# default (the same layout as the venv install, so both can share one download).
+# NVIDIA_GPU is the host GPU index (or UUID) for device_ids; default 0.
 # One GPU: run either "single" or "batch", not both.
 
 x-ornith: &ornith
@@ -46,7 +47,7 @@ x-serve: &serve
       reservations:
         devices:
           - driver: nvidia
-            count: 1
+            device_ids: ['${NVIDIA_GPU:-0}']
             capabilities: [gpu]
   restart: unless-stopped
   stop_grace_period: 30s

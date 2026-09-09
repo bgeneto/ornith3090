@@ -138,6 +138,7 @@ echo "Port:         $PORT"
 echo "Context:      $MAX_LEN tokens (mode: $CTX)"
 echo "Speculation:  $SPEC (draft tokens: $DRAFT_TOKENS)"
 echo "Prefix Cache: $PREFIX_CACHE"
+echo "GPU util:     $GPU_UTIL"
 echo "==============================================="
 
 exec venv/bin/vllm serve "$MODEL" \

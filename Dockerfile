@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1
 # Same stack as the README's venv install, frozen: Python 3.12 venv at /app/venv,
 # vLLM 0.28.0 (torch 2.13 / cu130 / Triton 3.7.1), every compatible patch in
 # patches/ applied,
@@ -20,9 +21,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-RUN python3.12 -m venv venv && venv/bin/pip install --upgrade pip
+RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
+    python3.12 -m venv venv && venv/bin/pip install --upgrade pip
 COPY docker/requirements.txt docker/requirements.txt
-RUN venv/bin/pip install -r docker/requirements.txt
+# The COPY above is tiny so it survives BuildKit GC; this RUN is several GB of
+# torch/vLLM and often gets evicted while the COPY still shows CACHED — then pip
+# re-downloads everything. The cache mount keeps the wheels across those rebuilds.
+RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
+    venv/bin/pip install -r docker/requirements.txt
 
 COPY . .
 RUN set -e; SP=$(venv/bin/python -c 'import vllm, os; print(os.path.dirname(vllm.__file__))' | tail -n1); \
