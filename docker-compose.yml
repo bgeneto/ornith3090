@@ -27,6 +27,11 @@ x-ornith: &ornith
     HF_HUB_ENABLE_HF_TRANSFER: ${HF_HUB_ENABLE_HF_TRANSFER:-1}
   volumes:
     - ${MODELS_DIR:-./models}:/app/models
+    - ./docker:/app/docker
+    - ./single-user:/app/single-user
+    - ./batch:/app/batch
+    - ./prepare:/app/prepare
+    - ./verify.sh:/app/verify.sh
     - ornith-cache:/cache
 
 x-serve: &serve

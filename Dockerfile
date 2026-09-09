@@ -12,7 +12,7 @@
 #   docker compose --profile single up -d      (see docs/docker.md)
 FROM nvidia/cuda:13.0.1-base-ubuntu24.04
 
-ENV DEBIAN_FRONTEND=noninteractive PIP_NO_CACHE_DIR=1 PYTHONUNBUFFERED=1
+ENV DEBIAN_FRONTEND=noninteractive PIP_NO_CACHE_DIR=0 PYTHONUNBUFFERED=1
 RUN apt-get update && apt-get install -y --no-install-recommends \
       python3.12 python3.12-venv python3.12-dev \
       cuda-nvcc-13-0 cuda-cudart-dev-13-0 libcurand-dev-13-0 \

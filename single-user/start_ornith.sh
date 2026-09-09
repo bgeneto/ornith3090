@@ -94,6 +94,11 @@ if [ "$PREFIX_CACHE" = "1" ]; then
   EXTRA_ARGS="--enable-prefix-caching --mamba-cache-mode align ${EXTRA_ARGS}"
 fi
 
+# CPU offload (optional for constrained VRAM e.g. 8GB GPUs)
+if [ -n "${CPU_OFFLOAD_GB:-}" ] && [ "$CPU_OFFLOAD_GB" != "0" ]; then
+  EXTRA_ARGS="--cpu-offload-gb $CPU_OFFLOAD_GB ${EXTRA_ARGS}"
+fi
+
 # Tool & Reasoning parser configuration
 # Ornith uses Qwen3 XML format (<tool_call><function=...><parameter=...>)
 TOOL_PARSER=${TOOL_PARSER:-qwen3_xml}
