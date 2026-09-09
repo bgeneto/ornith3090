@@ -106,6 +106,25 @@ else:
     ids = sorted(set(ids) | special)
     print(f"final draft vocab with special tokens: {len(ids)} ids")
 
+
+def _align_pack(ids, pack, vocab_size):
+    """AutoGPTQ qzeros are packed along the vocab dim (pack = 32/bits)."""
+    have = set(ids)
+    t = 0
+    while len(have) % pack:
+        if t not in have and t < vocab_size:
+            have.add(t)
+        t += 1
+        if t > vocab_size + pack:
+            break
+    out = sorted(have)
+    if len(out) != len(ids):
+        print(f"padded draft vocab {len(ids)} -> {len(out)} ids (GPTQ pack={pack})")
+    if len(out) % pack:
+        raise SystemExit(f"draft vocab {len(out)} still not aligned to pack={pack}")
+    return out
+
+
 # slice lm_head rows (AutoGPTQ qweight, or compressed-tensors weight_packed)
 idx = json.load(open(d + "model.safetensors.index.json"))
 wm = idx["weight_map"]
@@ -129,6 +148,8 @@ if "lm_head.qweight" in wm:
         gi = f.get_tensor("lm_head.g_idx") if "lm_head.g_idx" in f.keys() else None
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     from gptq_pack import pack_constant_qzeros
+    ids = _align_pack(ids, pack=4, vocab_size=int(qw.shape[1]))
+    ids_t = torch.tensor(ids, dtype=torch.int64)
     sub_w = qw.index_select(1, ids_t).contiguous()
     sub_s = sc.index_select(1, ids_t).contiguous()
     n_groups = int(sub_s.shape[0])
