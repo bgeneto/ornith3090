@@ -12,6 +12,36 @@ export PATH=/app/venv/bin:$PATH
 BASE=${BASE_MODEL_DIR:-/app/models/Ornith-1.5-9B-MixedInt4-AutoRound}
 HF_REPO=${HF_REPO:-Pilcothink/Ornith-1.5-9B-MixedInt4-AutoRound}
 
+# If corrupted compressed-tensors head packings are present from previous runs, restore pristine AutoRound files:
+python - "$BASE" <<'EOF'
+import os, sys, shutil, json
+d = sys.argv[1].rstrip("/") + "/"
+idx_path = os.path.join(d, "model.safetensors.index.json")
+if os.path.exists(idx_path):
+    try:
+        idx = json.load(open(idx_path)).get("weight_map", {})
+        if "lm_head.weight_packed" in idx:
+            print("prepare: detected incompatible lm_head.weight_packed for AutoRound; restoring pristine files...")
+            for src, dst in [
+                ("config.json.bak-quant", "config.json"),
+                ("model.safetensors.index.json.bak-quant", "model.safetensors.index.json"),
+                ("model-00001-of-00002.safetensors.bak", "model-00001-of-00002.safetensors"),
+                ("model_extra_tensors.safetensors.bak-draft", "model_extra_tensors.safetensors"),
+            ]:
+                src_f = os.path.join(d, src)
+                dst_f = os.path.join(d, dst)
+                if os.path.exists(src_f):
+                    shutil.copy2(src_f, dst_f)
+                    print(f"  restored {dst}")
+            for rm_f in ["mtp_draft_vocab_ids.pt", "model-00001-of-00002.safetensors.bak_embed"]:
+                p = os.path.join(d, rm_f)
+                if os.path.exists(p):
+                    os.remove(p)
+            print("prepare: restore complete.")
+    except Exception as e:
+        print(f"prepare: restore check warning: {e}")
+EOF
+
 state() {  # prints the steps still to do
 python - "$BASE" <<'EOF'
 import json, os, sys
@@ -26,14 +56,25 @@ if not all(os.path.exists(d + f) for f in
 idx = json.load(open(d + "model.safetensors.index.json"))["weight_map"]
 if any(not os.path.exists(d + f) for f in set(idx.values())):
     print("download"); sys.exit()
-if "lm_head.weight_packed" not in idx: todo.append("lm_head")
-if not any(k.endswith("embed_tokens.weight_packed") for k in idx): todo.append("embed")
-if ("mtp.layers.0.mlp.down_proj.weight_packed" not in idx and
-    "mtp.layers.0.mlp.down_proj.qweight" not in idx and
-    "mtp.layers.0.mlp.down_proj.weight" in idx):
-    todo.append("mtp")
-if "mtp.draft_lm_head.weight_packed" not in idx or not os.path.exists(d + "mtp_draft_vocab_ids.pt"):
-    todo.append("draft")
+if not os.path.exists(d + "model_extra_tensors.safetensors"):
+    print("download"); sys.exit()
+
+c = json.load(open(d + "config.json"))
+qc = c.get("quantization_config", {})
+quant_method = qc.get("quant_method", "")
+# AutoRound models (like Pilcothink/Ornith-1.5-9B-MixedInt4-AutoRound) keep lm_head
+# and embed_tokens in BF16. Compressed-tensors pack-quantization is incompatible with
+# vLLM's AutoRoundConfig.
+if quant_method != "auto-round":
+    if "lm_head.weight_packed" not in idx: todo.append("lm_head")
+    if not any(k.endswith("embed_tokens.weight_packed") for k in idx): todo.append("embed")
+    if ("mtp.layers.0.mlp.down_proj.weight_packed" not in idx and
+        "mtp.layers.0.mlp.down_proj.qweight" not in idx and
+        "mtp.layers.0.mlp.down_proj.weight" in idx):
+        todo.append("mtp")
+    if "mtp.draft_lm_head.weight_packed" not in idx or not os.path.exists(d + "mtp_draft_vocab_ids.pt"):
+        todo.append("draft")
+
 if os.environ.get("FAST_VARIANT", "0") != "0" and not os.path.exists(d[:-1] + "-fast/model.safetensors.index.json"):
     todo.append("fast")
 if os.environ.get("DFLASH2", "0") != "0" and not os.path.exists(os.path.dirname(d[:-1]) + "/Qwen3.8-27B-DFlash2-W4A16/model.safetensors"):
