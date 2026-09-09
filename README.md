@@ -47,7 +47,7 @@ echo "VLLM_API_KEY=$(openssl rand -hex 24)" > .env
 Or run via Docker without compose:
 
 ```bash
-docker run -d --name ornith --gpus all --ipc=host -p 18020:18020 \
+docker run -d --name ornith --gpus all --ipc=host -p 18020:8000 -e PORT=8000 \
   -v ornith-models:/app/models -v ornith-cache:/cache \
   --restart unless-stopped ornith15-9b-rtx3090:latest
 ```

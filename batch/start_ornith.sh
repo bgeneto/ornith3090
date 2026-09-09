@@ -66,6 +66,23 @@ if [ -n "${CPU_OFFLOAD_GB:-}" ] && [ "$CPU_OFFLOAD_GB" != "0" ]; then
   EXTRA_ARGS="--cpu-offload-gb $CPU_OFFLOAD_GB ${EXTRA_ARGS}"
 fi
 
+# Sleep mode (vLLM --enable-sleep-mode). Level is not a serve CLI arg in 0.28:
+# 0 or unset = off; 1/2 enable the flag and /sleep + /wake_up (VLLM_SERVER_DEV_MODE=1).
+# Clients then POST /sleep?level=$SLEEP_LEVEL. 1 offloads weights to CPU; 2 discards them.
+SLEEP_LEVEL=${SLEEP_LEVEL:-0}
+SLEEP_ARGS=()
+case "$SLEEP_LEVEL" in
+  0|"") ;;
+  1|2)
+    SLEEP_ARGS=(--enable-sleep-mode)
+    export VLLM_SERVER_DEV_MODE=1
+    ;;
+  *)
+    echo "SLEEP_LEVEL must be 0, 1, or 2 (got: $SLEEP_LEVEL)" >&2
+    exit 1
+    ;;
+esac
+
 TOOL_PARSER=${TOOL_PARSER:-qwen3_xml}
 TOOL_ARGS=()
 if [ "${TOOLS:-1}" = "1" ]; then
@@ -99,6 +116,7 @@ echo "Port:         $PORT"
 echo "Max Seqs:     $MAX_SEQS"
 echo "Context:      $MAX_LEN"
 echo "KV Cache:     $KV"
+echo "Sleep level:  $SLEEP_LEVEL"
 echo "=========================================="
 
 exec venv/bin/vllm serve "$MODEL" \
@@ -116,4 +134,5 @@ exec venv/bin/vllm serve "$MODEL" \
   --reasoning-parser qwen3 \
   --enable-prompt-tokens-details \
   "${TOOL_ARGS[@]}" \
+  "${SLEEP_ARGS[@]}" \
   ${EXTRA_ARGS}

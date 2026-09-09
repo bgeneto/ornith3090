@@ -7,11 +7,13 @@
 #
 # Knobs go in a .env file next to this file: VLLM_API_KEY=...,
 # and any of the start-script variables (CTX, KV, MAX_LEN, MAX_SEQS, GPU_UTIL,
-# DRAFT_TOKENS, SERVED_MODEL_NAME, EXTRA_ARGS, ...) — .env is passed straight
+# DRAFT_TOKENS, SERVED_MODEL_NAME, SLEEP_LEVEL, EXTRA_ARGS, ...) — .env is passed straight
 # into the container.
 #
-# PORT, MODELS_DIR, and NVIDIA_GPU are read here: models live in ./models by
-# default (the same layout as the venv install, so both can share one download).
+# PORT is the host publish port only. vLLM always listens on 8000 inside the
+# container (its own default), so PORT=8002 publishes as 8002:8000 — not
+# 8002:8002. Recreate after changing PORT (`docker compose up -d --force-recreate`).
+# MODELS_DIR defaults to ./models (same layout as the venv install).
 # NVIDIA_GPU is the host GPU index (or UUID) for device_ids; default 0.
 # One GPU: run either "single" or "batch", not both.
 
@@ -27,6 +29,8 @@ x-ornith: &ornith
     HOME: /cache
     HF_TOKEN: ${HF_TOKEN:-}
     HF_HUB_ENABLE_HF_TRANSFER: ${HF_HUB_ENABLE_HF_TRANSFER:-1}
+    # Override .env PORT so the start script binds vLLM on 8000, not the host port.
+    PORT: "8000"
   volumes:
     - ${MODELS_DIR:-./models}:/app/models
     - ./docker:/app/docker
@@ -39,7 +43,7 @@ x-ornith: &ornith
 x-serve: &serve
   <<: *ornith
   ports:
-    - "${PORT:-18020}:${PORT:-18020}"
+    - "${PORT:-18020}:8000"
   depends_on:
     prepare:
       condition: service_completed_successfully
@@ -53,7 +57,7 @@ x-serve: &serve
   restart: unless-stopped
   stop_grace_period: 30s
   healthcheck:
-    test: ["CMD", "curl", "-sf", "http://127.0.0.1:${PORT:-18020}/health"]
+    test: ["CMD", "curl", "-sf", "http://127.0.0.1:8000/health"]
     interval: 30s
     timeout: 5s
     retries: 3

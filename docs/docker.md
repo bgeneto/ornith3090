@@ -42,9 +42,10 @@ period).
   (`docker compose --profile single down` before `--profile batch up -d`).
 - Every start-script knob works from `.env`, which is passed straight into the
   container: `CTX=fast`, `DRAFT_TOKENS=4`, `PREFIX_CACHE=1`, `MAX_LEN=`,
-  `MAX_SEQS=`, `INT8_ACT=int8`, `EXTRA_ARGS=...`. `PORT` (default 18020) and `MODELS_DIR` (default `./models`,
-  so a venv install and the container share one persistent download) are read by
-  compose itself.
+  `MAX_SEQS=`, `INT8_ACT=int8`, `EXTRA_ARGS=...`. `PORT` (default 18020) is the
+  **host** publish port: compose maps `PORT:8000` because vLLM listens on 8000
+  inside the container. `MODELS_DIR` (default `./models`, so a venv install and
+  the container share one persistent download) is also read by compose itself.
 - `docker compose run --rm single verify` runs `verify.sh` inside the container
   (GPU, patches, model). The entrypoint runs the idempotent `prepare` and then
   `verify.sh --no-server` before every start — so a missing or half-prepared
@@ -66,7 +67,7 @@ separate `prepare` service, nothing the image needs. The same server, one
 command, no checkout:
 
 ```bash
-docker run -d --name qwen --gpus all --ipc=host -p 18020:18020 \
+docker run -d --name qwen --gpus all --ipc=host -p 18020:8000 -e PORT=8000 \
   -v qwen-models:/app/models -v qwen-cache:/cache \
   --restart unless-stopped ghcr.io/syv-ai/qwen38-27b-rtx3090:latest
 ```
