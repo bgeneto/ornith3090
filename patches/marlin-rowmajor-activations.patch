@@ -1,0 +1,27 @@
+Make Marlin activations row-major before the kernel.
+
+Marlin's CUDA check (marlin.cu:653) requires A.stride(1)==1. The INT8 GPTQ
+embed gather (patches/inc-gptq-embed.patch) used to return w.t() as a
+transpose view, so dummy_run died on the first GDN in_proj_qkvz even under
+--enforce-eager. That gather now materializes row-major; this patch is the
+kernel-side contract: after reshape/pad, copy if the last dim is still
+strided. Cheap no-op when already contiguous. Covers other strided sources
+(Inductor internals, RMSNorm empty_like of a view) without --enforce-eager.
+
+Apply from the installed vllm package directory:
+  patch -p1 -d venv/lib/python3.12/site-packages/vllm < patches/marlin-rowmajor-activations.patch
+
+Validated against vLLM 0.28.0.
+
+--- a/model_executor/layers/quantization/utils/marlin_utils.py
++++ b/model_executor/layers/quantization/utils/marlin_utils.py
+@@ -739,5 +739,9 @@
+     padded_n, padded_k = marlin_repacked_nk(weight, wtype.size_bits)
+     reshaped_x = marlin_pad_dim(reshaped_x, input_size_per_partition, padded_k)
++    # Marlin loads A as int4 along K (marlin.cu:653). reshape/pad can leave a
++    # transpose view (GPTQ embed gather, inductor) with stride(-1) != 1.
++    if reshaped_x.stride(-1) != 1:
++        reshaped_x = reshaped_x.contiguous()
+ 
+     use_atomic_add = should_use_atomic_add_reduce(
+         m=reshaped_x.size(0),

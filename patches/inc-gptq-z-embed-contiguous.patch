@@ -1,0 +1,25 @@
+Materialize GPTQ embed gathers as row-major activations.
+
+INCLinearMethod.embedding (patches/inc-gptq-embed.patch) unpacks GPTQ columns
+into w of shape [H, T] and returns w.t(). That transpose is a view:
+stride(1)==T, not 1. Marlin then dies on the first GDN in_proj_qkvz with
+"A.stride(1) is not 1" — including under --enforce-eager, because this is
+not an Inductor bug. One .contiguous() at gather time; residual/RMSNorm
+empty_like then stay row-major so later GEMMs do not copy.
+
+Apply after inc-gptq-embed.patch:
+  patch -p1 -d venv/lib/python3.12/site-packages/vllm < patches/inc-gptq-z-embed-contiguous.patch
+
+Validated against vLLM 0.28.0.
+
+--- a/model_executor/layers/quantization/inc/inc_linear.py
++++ b/model_executor/layers/quantization/inc/inc_linear.py
+@@ -62,4 +62,7 @@
+             (qw.unsqueeze(1) >> shifts.view(1, pack, 1)) & maxq
+         ).reshape(-1, ids.numel()).float() - zp
+         w = (q * sc.repeat_interleave(group, dim=0)).to(layer.scales.dtype)
+-        return w.t().reshape(*x.shape, -1)
++        # w is [H, T] (GPTQ columns). .t() is a view with stride(1)=T;
++        # Marlin requires A.stride(1)==1 (marlin.cu:653). Materialize
++        # row-major [T, H] here — one copy per embed, not per GEMM.
++        return w.t().contiguous().reshape(*x.shape, -1)
