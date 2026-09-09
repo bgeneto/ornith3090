@@ -34,6 +34,7 @@ def _key(path):  # a key is optional; keyless servers ignore the header
         return ""
 KEY = os.environ.get("VLLM_API_KEY") or _key(os.path.join(HERE, "..", "api_key.txt"))
 API = os.environ.get("VLLM_API", "http://127.0.0.1:18020/v1")
+MODEL = os.environ.get("SERVED_MODEL_NAME", "ornith-1.5-9b")
 # data dir: wikitext-2 test parquet, fineweb-2 dan_Latn test parquet, gsm8k test parquet (see README)
 Q = os.environ.get("QUALITY_DATA", os.path.join(HERE, "quality-data"))
 tag = sys.argv[1]
@@ -67,7 +68,7 @@ def docs():
 
 def ppl_one(item):
     lang, text = item
-    r = post("/completions", {"model":"qwen3.8-27b","prompt":text,"max_tokens":1,"temperature":0,
+    r = post("/completions", {"model":MODEL,"prompt":text,"max_tokens":1,"temperature":0,
                               "prompt_logprobs":0,"echo":False})
     pl = r["choices"][0]["prompt_logprobs"]  # list; first is None
     lps = []
@@ -96,7 +97,7 @@ def extract_num(s):
 def gsm_one(row):
     q, a = row
     gold = a.split("####")[-1].strip().replace(",","")
-    r = post("/chat/completions", {"model":"qwen3.8-27b","messages":[{"role":"user","content":q+"\n\nSolve step by step, then give the final answer as 'Final answer: <number>'."}],
+    r = post("/chat/completions", {"model":MODEL,"messages":[{"role":"user","content":q+"\n\nSolve step by step, then give the final answer as 'Final answer: <number>'."}],
         "max_tokens":768,"temperature":0,"chat_template_kwargs":{"enable_thinking":False}})
     txt = r["choices"][0]["message"]["content"] or ""
     m = re.search(r"Final answer:\s*\**\s*\$?(-?[\d,]*\.?\d+)", txt)

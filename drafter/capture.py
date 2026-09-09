@@ -19,10 +19,24 @@ os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 import numpy as np
 import torch
 
-MODEL = os.environ.get("MODEL", os.path.join(REPO, "models", "Qwen3.8-27B-W4A16-AutoRound"))
+MODEL = os.environ.get("MODEL", os.path.join(REPO, "models", "Ornith-1.5-9B-MixedInt4-AutoRound"))
 D = os.path.join(HERE, "data")
 LIMIT = int(sys.argv[sys.argv.index("--limit") + 1]) if "--limit" in sys.argv else None
-HID = 5120
+
+
+def _get_hid():
+    cfg_p = os.path.join(MODEL, "config.json")
+    if os.path.isfile(cfg_p):
+        try:
+            c = json.load(open(cfg_p))
+            tc = c.get("text_config", c)
+            return int(tc.get("hidden_size", 4096))
+        except Exception:
+            pass
+    return 4096
+
+
+HID = _get_hid()
 MAX_LEN = 8192
 
 

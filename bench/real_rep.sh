@@ -7,8 +7,9 @@
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"; REPO="$(dirname "$HERE")"; cd "$REPO"
 export PATH="$REPO/venv/bin:$PATH"
 export OPENAI_API_KEY=${VLLM_API_KEY:-$(cat "$REPO/api_key.txt" 2>/dev/null)}
-M=${MODEL:-$REPO/models/Qwen3.8-27B-W4A16-AutoRound}; TAG=$1; N=${2:-3}; T=${3:-}
-B="venv/bin/vllm bench serve --host 127.0.0.1 --port 18020 --model $M --served-model-name qwen3.8-27b"
+M=${MODEL:-$REPO/models/Ornith-1.5-9B-MixedInt4-AutoRound}; TAG=$1; N=${2:-3}; T=${3:-}
+SERVED_MODEL_NAME=${SERVED_MODEL_NAME:-ornith-1.5-9b}
+B="venv/bin/vllm bench serve --host 127.0.0.1 --port 18020 --model $M --served-model-name $SERVED_MODEL_NAME"
 metrics() { curl -s http://127.0.0.1:18020/metrics -H "Authorization: Bearer $OPENAI_API_KEY"; }
 snap() { metrics | grep -E "^vllm:spec_decode_num_(drafts|accepted_tokens)_total" | grep -v created | awk '{print $NF}' | tr "\n" " "; }
 for i in $(seq 1 $N); do

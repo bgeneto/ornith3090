@@ -21,8 +21,9 @@ for a in "$@"; do case $a in --prefill) DO_PREFILL=1;; --long) DO_LONG=1;; esac;
 export PATH="$REPO/venv/bin:$PATH"
 export OPENAI_API_KEY=${VLLM_API_KEY:-$(cat "$REPO/api_key.txt" 2>/dev/null)}
 HOST=${HOST:-127.0.0.1}; PORT=${PORT:-18020}
-MODEL=${MODEL:-$REPO/models/Qwen3.8-27B-W4A16-AutoRound}
-B="venv/bin/vllm bench serve --host $HOST --port $PORT --model $MODEL --served-model-name qwen3.8-27b"
+MODEL=${MODEL:-$REPO/models/Ornith-1.5-9B-MixedInt4-AutoRound}
+SERVED_MODEL_NAME=${SERVED_MODEL_NAME:-ornith-1.5-9b}
+B="venv/bin/vllm bench serve --host $HOST --port $PORT --model $MODEL --served-model-name $SERVED_MODEL_NAME"
 OUT=${OUT:-$HERE/results}; mkdir -p "$OUT"
 
 curl -sf -o /dev/null http://$HOST:$PORT/health || { echo "no server on $HOST:$PORT"; exit 1; }

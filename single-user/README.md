@@ -1,13 +1,15 @@
-# Single-user mode
+# Single-user mode for Ornith-1.5-9B
 
 For one person (or a handful) chatting with the model: coding assistant,
-local chat UI, anything where you're watching tokens stream in.
+local chat UI, agentic tool workflows, or anything where you're watching tokens stream in.
+Launched with `bash single-user/start_ornith.sh`.
 
-The difference from batch mode is MTP speculative decoding. Qwen ships a
-multi-token-prediction head with the model and this checkpoint keeps it, so
-the model drafts ahead and verifies the drafts in a single forward pass.
-Speculative decoding is exact: the sampled distribution is the same as without
-it, only the speed changes.
+The difference from batch mode is native MTP speculative decoding. Ornith-1.5-9B ships
+a native multi-token-prediction head (`mtp_num_hidden_layers = 1`) and the Pilcothink
+checkpoint pre-quantizes its transformer layers to INT4 AutoRound. The model drafts ahead
+and verifies the drafts in a single forward pass.
+Speculative decoding is exact: the sampled distribution is identical to non-speculative
+generation, with only decode latency improving.
 
 ## Benchmarks
 

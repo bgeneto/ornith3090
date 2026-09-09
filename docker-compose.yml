@@ -52,7 +52,7 @@ x-serve: &serve
 
 services:
   prepare:
-    <<: *qwen
+    <<: *ornith
     command: prepare
 
   single:

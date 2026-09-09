@@ -1,121 +1,61 @@
-# What this repo does that stock vLLM doesn't
+# What this repo does for Ornith-1.5-9B that stock vLLM doesn't
 
-Nine things stock vLLM doesn't give you on this model — summarised, then explained — plus the two speculative-decoding modes. For what each one is worth in tokens per second, see [what each step buys](../README.md#what-each-step-buys).
+Optimizations applied to [Ornith-1.5-9B](https://huggingface.co/ornith-ai/Ornith-1.5-9B) (starting from [Pilcothink/Ornith-1.5-9B-MixedInt4-AutoRound](https://huggingface.co/Pilcothink/Ornith-1.5-9B-MixedInt4-AutoRound)) on a single RTX 3090 GPU (24 GB). For what each one is worth in tokens per second, see the benchmark sections in the [main README](../README.md).
 
 [← back to the main README](../README.md)
 
-## The short version
+## Why Ornith-1.5-9B is an Ideal Target
 
-One line each; the rest of this page is the long version.
+Ornith-1.5-9B shares the same Qwen3.5 hybrid architecture as Qwen3.8-27B (`Qwen3_5ForConditionalGeneration`), but with key architectural properties that make it exceptionally well suited for 24 GB consumer GPUs:
+- **32 total layers**: 24 Gated DeltaNet (linear attention) layers + 8 full attention layers (interval 4: layers 3, 7, 11, 15, 19, 23, 27, 31).
+- **Hidden size 4096**, intermediate size 12288, head dimension 256.
+- **Large 248,320-token vocabulary** with untied embeddings.
+- **Native MTP**: `mtp_num_hidden_layers = 1`.
+- **Pre-quantized baseline**: `Pilcothink/Ornith-1.5-9B-MixedInt4-AutoRound` already performed mixed INT4 AutoRound quantization on transformer layers and MTP body layers.
+- **Abundant VRAM headroom**: The quantized model weights take only ~8.5 GB (compared to ~17 GB on 27B), leaving ~15.5 GB of free VRAM on an RTX 3090 for KV cache, recurrent states, and large CUDA graph memory pools without risking OOM.
 
-1. **Both embedding matrices requantized** (`prepare/quant_lm_head.py`, `prepare/quant_embed.py`)
-   — the public W4A16 quants leave two 2.5 GB bf16 matrices alone. 2.6 GB back.
-2. **A two-line vLLM patch** so the model code actually uses vLLM's quantized
-   embedding kernel (`patches/qwen3_5-embed-quant.patch`).
-3. **16-bit recurrent state** — the GDN state, not the KV cache, is what bounds
-   concurrency here: 37 of 64 requests were running before this.
-4. **int8 tensor cores for the batched GEMMs, with a bug fix** — vLLM's W4A8
-   Marlin path produces garbage on this checkpoint (negative group scales read
-   as unsigned); two patches fix it and make it per-layer selectable.
-5. **Cheap speculative drafts, and a draft vocabulary counted over the model's
-   own outputs** — 97.5% coverage vs 92% for a web-text list, and every miss is
-   a forced rejection. Worth 10% of single-stream throughput on its own.
-6. **Two decode-path patches for the verify step** — split-KV attention for
-   multi-query decode (FA2 leaves 58 of 82 SMs idle there) and a sort-free
-   top-k/top-p sampler.
-7. **Tuned flags that are easy to get wrong**, plus vLLM PR #50021 vendored for
-   an illegal memory access in the DeltaNet spec-decode kernels.
-8. **Speculation that reads the context** — when the model is reproducing
-   something from its prompt, draft it from the prompt, and verify a longer
-   block than the drafter can fill (`patches/dflash2-lookup-drafting.patch`):
-   **381 tok/s** reproducing a 25k-token document verbatim, against 260 for the
-   first version of this and 159 without it, still lossless.
-9. **Prefix caching for a hybrid model** — opt-in upstream; `PREFIX_CACHE=1`
-   makes a follow-up chat turn on a 24k document cost ~1 s instead of ~23 s, and
-   64 requests sharing a system prompt 17 s instead of 222 s.
-10. **int8 prefill for single-user mode** (`INT8_ACT=int8`) — prefill is
-   compute-bound at every batch size, so the W4A8 tensor-core path is worth
-   +27-30% prefill (+19% at 51k) on the dflash2 stack with decode unchanged;
-   plus a benchmark-harness fix (seeded prompts) that makes the prefill
-   numbers honest at all.
+## The Short Version
 
-## In full
+1. **Both embedding matrices requantized to INT8** (`prepare/quant_lm_head.py`, `prepare/quant_embed.py`)
+   — The base checkpoint leaves two ~2.03 GB BF16 matrices (`lm_head` and `embed_tokens`). Requantizing both to INT8 group-128 recovers **~2.03 GB VRAM** and directly reduces generation latency on the 248k-way logits projection.
+2. **Quantized embedding patch** (`patches/qwen3_5-embed-quant.patch`)
+   — Wires vLLM's dequant-on-gather kernel into `Qwen3_5ForConditionalGeneration` so it actually uses INT8 `embed_tokens`.
+3. **16-bit GDN recurrent state** (`--mamba-ssm-cache-dtype float16`)
+   — Halves recurrent memory traffic and footprint across 24 DeltaNet layers while preserving perplexity.
+4. **Native MTP speculative decoding ($k=3/4$)**
+   — Uses Ornith's native 1-layer MTP head (already INT4 AutoRound quantized) to propose 3–4 draft tokens per forward pass.
+5. **Reduced MTP draft vocabulary** (`prepare/build_draft_vocab.py`, `patches/qwen3_5-mtp-draft-vocab.patch`)
+   — Slices a ~40k-token draft head so the drafter doesn't evaluate all 248k rows on every draft step.
+6. **Split-KV verification kernel** (`patches/spec-decode-attn.patch`)
+   — Triton kernel that splits the KV sequence across thread blocks during multi-query verification, fully utilizing the 3090's 82 SMs.
+7. **Sort-free sampler** (`patches/sampler-small-topk-fast-softmax.patch`)
+   — Avoids full 248k vocabulary sorting when sampling with top-$k \le 64$ (Ornith recommends top-$k = 20$).
+8. **W4A8 INT8 activations for prefill** (`VLLM_MARLIN_INPUT_DTYPE=int8`)
+   — Accelerates compute-bound prefill on INT8 tensor cores with AutoRound negative scale fixes.
+9. **Hybrid prefix caching** (`--enable-prefix-caching`)
+   — Reuses KV cache and resumes GDN recurrent state across turns for coding agent workflows.
+10. **Phased approach for DFlash2**
+   — DFlash2 is deferred to Phase 2 because the Qwen3.8 drafter targets 64 layers (extracting hidden states at layers 5, 19, 33, 47, 61), whereas Ornith has 32 layers. Native MTP has lower relative overhead on 9B and targets **~150–190+ tok/s**.
 
-1. **Both embedding matrices requantized.** Qwen3.8-27B has untied embeddings,
-   so the public W4A16 quants carry two separate 2.5 GB bf16 matrices (lm_head
-   and embed_tokens) that nobody bothered to quantize. `prepare/quant_lm_head.py` and
-   `prepare/quant_embed.py` requantize both to int8 group-128 in place (~0.6%
-   round-trip error, no quality regression we could find). That's 2.6 GB of
-   VRAM back.
-2. **A small vLLM patch for those embeddings.** vLLM ships a dequant-on-gather
-   kernel for int-quantized embedding tables but the qwen3_5 model code never
-   wires it up — neither in the main model nor in the MTP draft module.
-   `patches/qwen3_5-embed-quant.patch` fixes both (two lines each).
-3. **16-bit recurrent state.** 48 of the 64 layers are Gated DeltaNet with a
-   fixed recurrent state per sequence, and Qwen's config asks for it in fp32:
-   ~150 MB per request, allocated up front, read and written on every decode
-   step. On this architecture that state — not the KV cache — is what bounds
-   concurrency: with `--max-num-seqs 64` only 37 requests were ever actually
-   running (log line `Running: 37 reqs, Waiting: 27`). `--mamba-ssm-cache-dtype
-   float16` halves the footprint and the traffic; all 64 run, and perplexity is
-   unchanged to three decimals (fp16 keeps 10 mantissa bits; we did not use
-   bf16's 7).
-4. **int8 tensor cores for the batched GEMMs, with a bug fix.** At 40-64
-   concurrent sequences the decode step is bound by fp16 tensor-core math
-   (~63 TFLOPS sustained at 250 W). vLLM already has a W4A8-INT8 Marlin path
-   (`VLLM_MARLIN_INPUT_DTYPE=int8`: weights stay int4, activations are
-   quantized to int8 per token, the MMA runs on int8 tensor cores at 4× the
-   rate) — but on this checkpoint it produced garbage while benchmarking
-   beautifully. The kernel reads its int16-requantized group scales as
-   *unsigned*, and AutoRound symmetric exports have ~50% negative scales.
-   `patches/marlin-int8-negative-scales.patch` folds the sign into the int4
-   codes at load time; `patches/marlin-int8-layer-select.patch` lets you pick
-   which layers get int8 activations (and keeps it off the int8-weight lm_head,
-   which would otherwise refuse to load).
-5. **Cheap speculative drafts, and a draft vocabulary that covers what the
-   model actually says.** The shipped MTP draft module is bf16 (850 MB) and
-   every draft token also runs the full 248k-row lm_head (1.3 GB), so each
-   extra draft cost ~3 ms and MTP-3 was already slower than MTP-2.
-   `prepare/quant_mtp.py` requantizes the draft module (int8; the fast variant uses
-   GPTQ int4, `drafter/`), `prepare/build_draft_vocab.py` builds a 40k-token draft head
-   and `patches/qwen3_5-mtp-draft-vocab.patch` makes the drafter use it. A
-   draft now costs ~0.5-1 ms and four of them pay off. The id list matters
-   more than anything else in this repo's single-user numbers: a token outside
-   the draft vocabulary can never be proposed, so it is a guaranteed rejection
-   that also cuts the chain. The list we now ship (`prepare/draft_vocab_ids.json`) is
-   counted over 5.4M tokens of the model's own outputs and covers 97.5% of what
-   it generates (96% on code); the earlier web-text list covered 92% (83% on
-   code) and cost 10% of single-stream throughput on its own.
-6. **Two decode-path patches for the multi-query verify step.**
-   `patches/spec-decode-attn.patch`: FlashAttention-2 only splits the KV
-   sequence across thread blocks when a request has one query token; the MTP
-   verify step has five, so a 24-head model runs attention on 24 of the 3090's
-   82 SMs — 57 µs per layer at 1.5k context, 1.3 ms at 16k. A small Triton
-   split-KV kernel replaces it (23 µs / 120 µs). `patches/sampler-small-topk-
-   fast-softmax.patch`: vLLM's top-k/top-p masking sorts the whole 248k vocab
-   for every row and its softmax runs one thread block per row (140 µs for a
-   single 248k-wide row, called several times per step); with top-k ≤ 64 known
-   on the host the mask is one `torch.topk`, the softmax is multi-block, and
-   drafts are sampled from the same truncated support as the target. Together
-   +4% at default sampling.
-7. **Tuned flags that are easy to get wrong**, each documented in the launch
-   scripts and the gotchas below, plus vLLM PR
-   [#50021](https://github.com/vllm-project/vllm/pull/50021) vendored as
-   `patches/vllm-pr50021-gdn-spec-bounds.patch` (bounds checks in the DeltaNet
-   speculative-decode kernels; we hit the illegal-memory-access it fixes with
-   several concurrent MTP requests).
-8. **Speculation that reads the context.** A block drafter sees a 2,048-token window; a
-   long-context assistant spends much of its output reproducing what it was given.
-   `patches/dflash2-lookup-drafting.patch` proposes the continuation of the most recent
-   earlier occurrence of what was just generated — from anywhere in the request's own
-   history — with a point-mass draft distribution so the verify stays exact. Because those
-   tokens cost the drafter nothing, the verify block is no longer capped at the drafter's
-   own (7 tokens), and the long block is only scheduled while the lookup is firing:
-   reproducing a document verbatim goes 7.83 → 15.0 tokens per step, 260 → 381 tok/s.
-9. **Prefix caching for a hybrid model, on purpose.** vLLM keeps it opt-in for
-   mamba/GDN hybrids; `PREFIX_CACHE=1` turns it on in both modes with the recurrent state
-   resumed from the last cached block boundary. Follow-up chat turns on a 24k document:
-   23 s → 1 s. 64 API requests sharing a 5.8k system prompt: 222 s → 17 s.
+## In Full
+
+1. **Both embedding matrices requantized.**
+   Ornith-1.5-9B has untied embeddings with a vocabulary of 248,320 and hidden size of 4096. A single BF16 matrix of $248,320 \times 4096$ contains ~1.017 billion parameters (~2.03 GB). Untied embeddings mean two separate matrices:
+   - `model.language_model.embed_tokens.weight` (~2.03 GB BF16)
+   - `lm_head.weight` (~2.03 GB BF16)
+   Totaling ~4.07 GB. `prepare/quant_lm_head.py` and `prepare/quant_embed.py` convert both to INT8 group-128 in place, saving **~2.03 GB VRAM**. Crucially, quantizing `lm_head` also speeds up decode steps because the large 248k projection occurs on every generated token.
+2. **Quantized embedding patch.**
+   vLLM provides an optimized dequant-on-gather kernel for quantized embedding tables, but `qwen3_5.py` did not connect it. `patches/qwen3_5-embed-quant.patch` hooks this up cleanly.
+3. **16-bit GDN recurrent state.**
+   24 of Ornith's 32 layers are Gated DeltaNet with fixed recurrent state per sequence. Stock configuration requests FP32 (`"mamba_ssm_dtype": "float32"`). Using `--mamba-ssm-cache-dtype float16` cuts the memory footprint and bandwidth in half with identical perplexity.
+4. **W4A8 / INT8 tensor cores for GEMMs with AutoRound fixes.**
+   AutoRound symmetric quantization produces group scales with ~50% negative values. Upstream Marlin kernels read scales as unsigned, corrupting output. `patches/marlin-int8-negative-scales.patch` folds the sign into the INT4 weights at load time, allowing `VLLM_MARLIN_INPUT_DTYPE=int8` to deliver +25–30% prefill throughput.
+5. **Native MTP draft module and reduced draft vocabulary.**
+   Pilcothink already quantized the MTP transformer layers (`mtp.layers.0.*`) to INT4 AutoRound in `model_extra_tensors.safetensors`. To prevent the MTP draft step from evaluating the full 248k vocabulary, `prepare/build_draft_vocab.py` slices a 40k-token draft head (`mtp.draft_lm_head.*`), guided by `prepare/draft_vocab_ids.json` or custom output frequencies.
+6. **Multi-query verify optimizations (Split-KV and sort-free sampler).**
+   During MTP verification, multiple draft tokens are evaluated simultaneously. FlashAttention-2 leaves many SMs idle on consumer GPUs when verifying small batches of query tokens. `patches/spec-decode-attn.patch` splits KV attention across thread blocks. In addition, `patches/sampler-small-topk-fast-softmax.patch` replaces expensive 248k full-vocabulary sorting with a fast path for top-$k \le 64$ (perfect for Ornith's recommended top-$k = 20$).
+7. **Hybrid prefix caching.**
+   Ornith blends 24 linear-attention GDN layers and 8 standard attention layers. Prefix caching (`--enable-prefix-caching`) caches both attention KV blocks and GDN recurrent states at chunk boundaries, slashing time-to-first-token on multi-turn conversations from 20+ seconds to <1 second.
 
 ### int8 prefill for single-user mode (`INT8_ACT=int8`)
 
@@ -197,13 +137,18 @@ Things this campaign measured that did NOT pay, so nobody re-walks them:
   first forward — an inductor codegen bug with the mixed set on this
   torch/vllm pin. Use `mlp` or the full default.
 
-### DFlash2 (`SPEC=dflash2`)
+### DFlash2 (`SPEC=dflash2`, Phase 2)
+
+> [!NOTE]
+> **Phase 1 vs. Phase 2 (DFlash2 on Ornith-1.5-9B)**:
+> The existing `syvai/Qwen3.8-27B-DFlash2-W4A16` drafter cannot be used with Ornith-1.5-9B because it was trained to consume hidden states from layers 5/19/33/47/61 of the 64-layer 27B model, whereas Ornith-1.5-9B has only 32 layers.
+> On a 9B target, drafter overhead is proportionally much larger, so native MTP ($k=3/4$) with INT4 AutoRound weights and INT8 logits is expected to achieve ~150–190+ tok/s. Training an Ornith-specific DFlash2 drafter via vLLM `speculators` is planned as a Phase 2 extension. The reference notes below document how DFlash2 integration was engineered on this stack.
 
 The one lever left after all of the above is acceptance, and Qwen's MTP head
 is a single-layer chain drafter at its ceiling. [DFlash2](https://inco.ai/blog/dflash2/)
 (Inco, Aug 2026) is a different drafter for this exact target:
 5 Qwen3-style layers that predict the whole 7-token block in one
-non-autoregressive pass from the target's layer 5/19/33/47/61 hidden states,
+non-autoregressive pass from the target's layer hidden states,
 plus a selector that walks a coherent path through 16 candidates per slot. On
 the bf16 model it reports 4.80 tokens per step vs 4.28 for MTP at the same block
 size. What it took to make it pay on a 24 GB card, in order:

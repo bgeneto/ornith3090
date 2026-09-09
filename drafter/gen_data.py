@@ -10,7 +10,7 @@ HERE = os.path.dirname(os.path.abspath(__file__)); REPO = os.path.dirname(HERE)
 from transformers import AutoTokenizer
 from vllm import LLM, SamplingParams
 
-MODEL = os.environ.get("MODEL", os.path.join(REPO, "models", "Qwen3.8-27B-W4A16-AutoRound"))
+MODEL = os.environ.get("MODEL", os.path.join(REPO, "models", "Ornith-1.5-9B-MixedInt4-AutoRound"))
 D = os.path.join(HERE, "data")
 LIMIT = int(sys.argv[sys.argv.index("--limit") + 1]) if "--limit" in sys.argv else None
 CHUNK = int(sys.argv[sys.argv.index("--chunk") + 1]) if "--chunk" in sys.argv else 512
@@ -36,7 +36,7 @@ def main():
 
     llm = LLM(
         model=MODEL,
-        served_model_name="qwen3.8-27b",
+        served_model_name="ornith-1.5-9b",
         gpu_memory_utilization=float(os.environ.get("GPU_UTIL", 0.93)),
         max_model_len=8192,
         max_num_seqs=int(os.environ.get("MAX_SEQS", 64)),

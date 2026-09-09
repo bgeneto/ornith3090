@@ -1,7 +1,8 @@
-# Batch mode
+# Batch mode for Ornith-1.5-9B
 
 For serving many concurrent requests: API backends, data processing pipelines,
 eval runs. Tuned for aggregate tokens per second, not per-request latency.
+Launched with `bash batch/start_ornith.sh`.
 
 ## Benchmarks
 

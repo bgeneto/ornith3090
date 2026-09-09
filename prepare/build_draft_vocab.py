@@ -81,22 +81,30 @@ for i, path in enumerate(corpus):
 print(f"corpus tokens: {total}")
 
 special = set(tok.all_special_ids)
-if ids_file:
-    special = set()
-for name in ("<|im_start|>", "<|im_end|>", "<|endoftext|>", "<think>", "</think>", "<tool_call>", "</tool_call>", "<tool_response>", "</tool_response>"):
+for name in (
+    "<|im_start|>", "<|im_end|>", "<|endoftext|>", "<think>", "</think>",
+    "<tool_call>", "</tool_call>", "<tool_response>", "</tool_response>",
+    "<|box_start|>", "<|box_end|>", "<|quad_start|>", "<|quad_end|>",
+    "<|vision_start|>", "<|vision_end|>", "<|vision_pad|>",
+):
     tid = tok.convert_tokens_to_ids(name)
-    if isinstance(tid, int) and tid >= 0: special.add(tid)
+    if isinstance(tid, int) and tid >= 0:
+        special.add(tid)
+
 if not ids_file:
     top = [t for t, _ in counts.most_common() if t not in special][: N - len(special)]
     ids = sorted(set(top) | special)
     cover = sum(c for t, c in held.items() if t in set(ids)) / max(1, sum(held.values()))
     print(f"draft vocab: {len(ids)} ids, held-out token coverage {cover*100:.2f}%")
-    for n_try in (16384, 32768, 49152, 65536):
+    for n_try in (16384, 32768, 40960, 49152, 65536):
         s = set(t for t, _ in counts.most_common(n_try)) | special
         c = sum(c for t, c in held.items() if t in s) / max(1, sum(held.values()))
         print(f"  coverage at N={n_try}: {c*100:.2f}%")
     json.dump(ids, open(d + "draft_vocab_ids.json", "w"))
     print(f"id list written to {d}draft_vocab_ids.json (copy it next to this script to reuse)")
+else:
+    ids = sorted(set(ids) | special)
+    print(f"final draft vocab with special tokens: {len(ids)} ids")
 
 # slice lm_head rows
 idx = json.load(open(d + "model.safetensors.index.json"))

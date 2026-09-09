@@ -25,8 +25,16 @@ import sys
 import time
 import urllib.request
 
-KEY = open(os.path.expanduser("~/qwen-serving/api_key.txt")).read().strip()
-BASE = "http://127.0.0.1:18020"
+def _key():
+    for p in ("api_key.txt", os.path.join(os.path.dirname(__file__), "..", "api_key.txt"), os.path.expanduser("~/qwen-serving/api_key.txt")):
+        if os.path.isfile(p):
+            try: return open(p).read().strip()
+            except Exception: pass
+    return os.environ.get("VLLM_API_KEY", "")
+
+KEY = _key()
+BASE = f"http://127.0.0.1:{os.environ.get('PORT', '18020')}"
+MODEL = os.environ.get("SERVED_MODEL_NAME", "ornith-1.5-9b")
 TAG = sys.argv[1] if len(sys.argv) > 1 else "run"
 
 
@@ -80,7 +88,7 @@ TASKS = [t for t in ALL_TASKS if not want or t[0] in want.split(",")]
 # Warm-up: the first long-block step JIT-compiles Triton kernels, and those seconds would
 # otherwise land inside the first task's decode window (worth 30% on it).
 for warm in (64, 64):
-    payload = {"model": "qwen3.8-27b",
+    payload = {"model": MODEL,
                "messages": [{"role": "user", "content": "Dokument:\n\n" + doc[:4000] +
                              "\n\nGengiv ordret de første 10 linjer af dokumentet."}],
                "max_tokens": warm, "temperature": 0,
@@ -93,7 +101,7 @@ for warm in (64, 64):
 tot = {"steps": 0.0, "acc": 0.0, "out": 0.0, "dec": 0.0}
 rows = []
 for name, q in TASKS:
-    payload = {"model": "qwen3.8-27b",
+    payload = {"model": MODEL,
                "messages": [{"role": "user", "content": "Dokument:\n\n" + doc + "\n\n" + q}],
                "max_tokens": MAXTOK, "temperature": 0, "stream": True,
                "stream_options": {"include_usage": True},

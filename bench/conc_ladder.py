@@ -77,6 +77,7 @@ CTXTOK = _arg("--ctx-tokens", 4096)
 JSONOUT = _arg("--json", "", str)
 LABEL = _arg("--label", "", str)
 SHARED = "--shared" in sys.argv
+MODEL = os.environ.get("SERVED_MODEL_NAME", "ornith-1.5-9b")
 
 FILLER = ("The RTX 3090 has 24 GB of GDDR6X and 82 streaming multiprocessors. "
           "Memory bandwidth is 936 GB/s, which is what decode is bound by. ")
@@ -123,7 +124,7 @@ def metrics():
 
 def stream(i, salt, res, first_tok):
     body = json.dumps({
-        "model": "qwen3.8-27b",
+        "model": MODEL,
         "messages": [{"role": "user", "content": make_prompt(i, salt)}],
         "max_tokens": NOUT, "temperature": 0.0, "stream": True,
         "stream_options": {"include_usage": True},

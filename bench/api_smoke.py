@@ -16,6 +16,7 @@ KEY = os.environ.get("VLLM_API_KEY") or _key(os.path.join(REPO, "api_key.txt"))
 PORT = os.environ.get("PORT", "18020")
 URL = f"http://127.0.0.1:{PORT}/v1/chat/completions"
 URLC = f"http://127.0.0.1:{PORT}/v1/completions"
+MODEL = os.environ.get("SERVED_MODEL_NAME", "ornith-1.5-9b")
 
 
 def post(url, payload, stream=False):
@@ -28,7 +29,7 @@ def post(url, payload, stream=False):
 
 
 def chat(msg, **kw):
-    p = {"model": "qwen3.8-27b", "messages": [{"role": "user", "content": msg}], "max_tokens": 64,
+    p = {"model": MODEL, "messages": [{"role": "user", "content": msg}], "max_tokens": 64,
          "chat_template_kwargs": {"enable_thinking": False}}
     p.update(kw)
     return post(URL, p)
@@ -72,7 +73,7 @@ def t_min_tokens_penalty():
     r = chat("Sig hej.", temperature=0.7, min_tokens=30, presence_penalty=1.2, frequency_penalty=0.3, max_tokens=48)
     return r["usage"]["completion_tokens"] >= 30, r["usage"]
 def t_stream():
-    body = post(URL, {"model": "qwen3.8-27b", "messages": [{"role": "user", "content": "Skriv to sætninger om vejret."}],
+    body = post(URL, {"model": MODEL, "messages": [{"role": "user", "content": "Skriv to sætninger om vejret."}],
                       "max_tokens": 48, "stream": True, "chat_template_kwargs": {"enable_thinking": False}}, stream=True)
     chunks = [l for l in body.splitlines() if l.startswith("data: ") and "[DONE]" not in l]
     return len(chunks) > 5, f"{len(chunks)} chunks"
@@ -81,7 +82,7 @@ def t_thinking():
     m = r["choices"][0]["message"]
     return ("391" in (m.get("content") or "")) and bool(m.get("reasoning_content") or m.get("reasoning")), (m.get("content") or "")[:60]
 def t_completions_echo_logprobs():
-    r = post(URLC, {"model": "qwen3.8-27b", "prompt": "København er hovedstaden i", "max_tokens": 4, "temperature": 0,
+    r = post(URLC, {"model": MODEL, "prompt": "København er hovedstaden i", "max_tokens": 4, "temperature": 0,
                     "echo": True, "logprobs": 1})
     lp = r["choices"][0]["logprobs"]
     return len(lp["tokens"]) > 4 and lp["token_logprobs"][0] is None, lp["tokens"][:6]
