@@ -21,7 +21,19 @@ case "$cmd" in
     if [ "${VERIFY:-1}" != "0" ]; then
       bash verify.sh --no-server || { echo "entrypoint: verify.sh FAILED — fix the above or set VERIFY=0"; exit 1; }
     fi
-    if [ "$cmd" = single ]; then exec bash single-user/start_qwen.sh "$@"; else exec bash batch/start_qwen.sh "$@"; fi ;;
+    if [ "$cmd" = single ]; then
+      if [ -f single-user/start_ornith.sh ]; then
+        exec bash single-user/start_ornith.sh "$@"
+      else
+        exec bash single-user/start_qwen.sh "$@"
+      fi
+    else
+      if [ -f batch/start_ornith.sh ]; then
+        exec bash batch/start_ornith.sh "$@"
+      else
+        exec bash batch/start_qwen.sh "$@"
+      fi
+    fi ;;
   prepare) exec bash docker/prepare.sh "$@" ;;
   verify)  exec bash verify.sh "$@" ;;
   *)       exec "$cmd" "$@" ;;

@@ -18,7 +18,7 @@ FAILS=0
 ok()   { printf "  PASS  %s\n" "$1"; }
 warn() { printf "  WARN  %s\n" "$1"; }
 fail() { printf "  FAIL  %s\n" "$1"; FAILS=$((FAILS+1)); }
-MODEL=${MODEL:-$HERE/models/Qwen3.8-27B-W4A16-AutoRound}
+MODEL=${MODEL:-$HERE/models/Ornith-1.5-9B-MixedInt4-AutoRound}
 PY=${PY:-$HERE/venv/bin/python}
 
 echo "== environment"
@@ -100,12 +100,18 @@ def fail(m):
     global F
     print("  FAIL ", m); F += 1
 # lm_head / embed int8
-if "lm_head.weight_packed" in idx and any(g["targets"] == ["re:.*lm_head$"] and g["weights"]["num_bits"] == 8 for g in groups.values()): ok("lm_head requantized to int8 (prepare/quant_lm_head.py)")
+has_lm_group = any(g.get("targets") == ["re:.*lm_head$"] and g.get("weights", {}).get("num_bits") == 8 for g in groups.values()) or qc.get("extra_config", {}).get("lm_head", {}).get("bits") == 8
+if "lm_head.weight_packed" in idx and has_lm_group: ok("lm_head requantized to int8 (prepare/quant_lm_head.py)")
 else: fail("lm_head not requantized: run prepare/quant_lm_head.py")
-if any(k.endswith("embed_tokens.weight_packed") for k in idx) and any(g["targets"] == ["re:.*embed_tokens$"] for g in groups.values()): ok("embed_tokens requantized to int8 (prepare/quant_embed.py)")
+
+has_emb_group = any(g.get("targets") == ["re:.*embed_tokens$"] and g.get("weights", {}).get("num_bits") == 8 for g in groups.values()) or any("embed_tokens" in k and v.get("bits") == 8 for k, v in qc.get("extra_config", {}).items())
+if any(k.endswith("embed_tokens.weight_packed") for k in idx) and has_emb_group: ok("embed_tokens requantized to int8 (prepare/quant_embed.py)")
 else: fail("embed_tokens not requantized: run prepare/quant_embed.py")
-if "mtp.layers.0.mlp.down_proj.weight_packed" in idx and "mtp.layers.0.mlp.down_proj" not in ign: ok("MTP draft module quantized (prepare/quant_mtp.py)")
+
+mtp_quant = ("mtp.layers.0.mlp.down_proj.weight_packed" in idx and "mtp.layers.0.mlp.down_proj" not in ign) or ("mtp.layers.0.mlp.down_proj.qweight" in idx)
+if mtp_quant: ok("MTP draft module quantized (INT4 AutoRound/GPTQ)")
 else: print("  WARN  MTP module still bf16 (prepare/quant_mtp.py) — single-user mode is slower without it")
+
 if "mtp.draft_lm_head.weight_packed" in idx and os.path.exists(d + "mtp_draft_vocab_ids.pt"): ok("40k-token draft head present (prepare/build_draft_vocab.py)")
 else: print("  WARN  draft head missing (prepare/build_draft_vocab.py --ids prepare/draft_vocab_ids.json) — single-user mode drafts with the full lm_head")
 missing = [f for f in set(idx.values()) if not os.path.exists(d + f)]
@@ -117,7 +123,7 @@ EOF
 fi
 
 echo "== single-user fast variant (optional)"
-if [ -d "$HERE/models/Qwen3.8-27B-W4A16-AutoRound-fast" ]; then ok "fast variant present (int4-GPTQ lm_head/MTP, own-output draft vocab)"; else warn "no models/Qwen3.8-27B-W4A16-AutoRound-fast (venv/bin/python prepare/fetch_fast_variant.py; single-user mode is ~15% slower without it)"; fi
+if [ -d "$HERE/models/Ornith-1.5-9B-MixedInt4-AutoRound-fast" ]; then ok "fast variant present (int4-GPTQ lm_head/MTP, own-output draft vocab)"; else warn "no models/Ornith-1.5-9B-MixedInt4-AutoRound-fast (single-user runs with base AutoRound + INT8 lm_head)"; fi
 
 if [ $INSTALL = 0 ]; then
 # A served model dir with no tokenizer.json is not an error to transformers: it hands
@@ -125,7 +131,7 @@ if [ $INSTALL = 0 ]; then
 # server then dies far downstream on "ReasoningConfig: failed to tokenize reasoning
 # strings", which names neither the dir nor the tokenizer. Encode <think> here instead.
 echo "== tokenizers (every dir we serve --model from)"
-$PY - "$MODEL" "$HERE/models/Qwen3.8-27B-W4A16-AutoRound-fast" <<'EOF'
+$PY - "$MODEL" "$HERE/models/Ornith-1.5-9B-MixedInt4-AutoRound-fast" <<'EOF'
 import os, sys
 F = 0
 for d in sys.argv[1:]:
@@ -149,12 +155,11 @@ sys.exit(1 if F else 0)
 EOF
 [ $? -ne 0 ] && FAILS=$((FAILS+1))
 fi
-echo "== single-user DFlash2 drafter (optional, SPEC=dflash2)"
-if [ -f "$HERE/models/Qwen3.8-27B-DFlash2-W4A16/config.json" ]; then
-  $PY -c "import json,sys; c=json.load(open('$HERE/models/Qwen3.8-27B-DFlash2-W4A16/config.json')); assert c['architectures']==['DFlash2DraftModel'] and c['quantization_config']['quant_method']=='compressed-tensors'" 2>/dev/null && ok "DFlash2 drafter present, W4A16 (models/Qwen3.8-27B-DFlash2-W4A16)" || fail "models/Qwen3.8-27B-DFlash2-W4A16 is not a quantized DFlash2DraftModel checkpoint"
+echo "== single-user DFlash2 drafter (optional, SPEC=dflash2, Phase 2)"
+if [ -f "$HERE/models/Ornith-1.5-9B-DFlash2-W4A16/config.json" ]; then
+  $PY -c "import json,sys; c=json.load(open('$HERE/models/Ornith-1.5-9B-DFlash2-W4A16/config.json')); assert c['architectures']==['DFlash2DraftModel'] and c['quantization_config']['quant_method']=='compressed-tensors'" 2>/dev/null && ok "DFlash2 drafter present, W4A16 (models/Ornith-1.5-9B-DFlash2-W4A16)" || fail "models/Ornith-1.5-9B-DFlash2-W4A16 is not a quantized DFlash2DraftModel checkpoint"
   [ -f "$SP/model_executor/models/qwen3_dflash2.py" ] || fail "DFlash2 drafter present but vLLM 0.28.0 native DFlash2 support is missing"
-elif [ -f "$HERE/models/Qwen3.8-27B-DFlash2/config.json" ]; then warn "only the bf16 DFlash2 drafter is present (3.85 GB; venv/bin/python prepare/fetch_dflash2.py for the 1 GB W4A16 one)"
-else warn "no DFlash2 drafter (venv/bin/python prepare/fetch_dflash2.py; SPEC=dflash2 single-user mode needs it)"; fi
+else warn "no Ornith DFlash2 drafter (Phase 1 uses native MTP k=4; DFlash2 requires 32-layer Ornith retrained drafter)"; fi
 
 echo "== keys / units"
 # A key is optional: with neither api_key.txt nor VLLM_API_KEY the launchers export
@@ -162,7 +167,7 @@ echo "== keys / units"
 # Worth a WARN rather than silence only because both launchers bind 0.0.0.0.
 [ -s api_key.txt ] || [ -n "${VLLM_API_KEY:-}" ] && ok "API key configured (api_key.txt or VLLM_API_KEY)" \
   || warn "no API key — the server will accept any request, and it listens on 0.0.0.0. Fine behind a firewall; otherwise: openssl rand -hex 24 > api_key.txt"
-if [ -f /.dockerenv ]; then :; elif systemctl --user is-active qwen-serving >/dev/null 2>&1; then ok "systemd user unit qwen-serving active"; else warn "qwen-serving unit not active (fine if you launch the scripts by hand)"; fi
+if [ -f /.dockerenv ]; then :; elif systemctl --user is-active ornith-serving >/dev/null 2>&1 || systemctl --user is-active qwen-serving >/dev/null 2>&1; then ok "systemd user unit active"; else warn "serving unit not active (fine if you launch the scripts by hand)"; fi
 fi  # INSTALL
 
 if [ $NOSRV = 0 ]; then
@@ -171,10 +176,12 @@ if [ $NOSRV = 0 ]; then
   if curl -sf -o /dev/null http://127.0.0.1:$PORT/health; then
     ok "/health 200"
     KEY=${VLLM_API_KEY:-$(cat api_key.txt 2>/dev/null)}
+    SERVED_NAME=$(curl -s http://127.0.0.1:$PORT/v1/models -H "Authorization: Bearer $KEY" | $PY -c 'import json,sys; m=json.load(sys.stdin).get("data", [{}]); print(m[0].get("id", "ornith-1.5-9b"))' 2>/dev/null || echo "ornith-1.5-9b")
     R=$(curl -s http://127.0.0.1:$PORT/v1/chat/completions -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
-        -d '{"model":"qwen3.8-27b","messages":[{"role":"user","content":"Hvad er hovedstaden i Danmark? Svar med ét ord."}],"max_tokens":8,"temperature":0,"chat_template_kwargs":{"enable_thinking":false}}')
-    echo "$R" | grep -qi "københavn\|copenhagen" && ok "chat completion answers ('$(echo "$R" | $PY -c 'import json,sys; print(json.load(sys.stdin)["choices"][0]["message"]["content"].strip())' 2>/dev/null)')" || fail "chat completion wrong/failed: $(echo "$R" | head -c 200)"
-    LOG=$HERE/qwen.log
+        -d "{\"model\":\"$SERVED_NAME\",\"messages\":[{\"role\":\"user\",\"content\":\"Respond with exactly the single word OK and nothing else.\"}],\"max_tokens\":8,\"temperature\":0,\"chat_template_kwargs\":{\"enable_thinking\":false}}")
+    echo "$R" | grep -qi "ok" && ok "chat completion answers ('$(echo "$R" | $PY -c 'import json,sys; print(json.load(sys.stdin)["choices"][0]["message"]["content"].strip())' 2>/dev/null)')" || fail "chat completion wrong/failed: $(echo "$R" | head -c 200)"
+    LOG=${LOG:-$HERE/ornith.log}
+    [ ! -f "$LOG" ] && [ -f "$HERE/qwen.log" ] && LOG="$HERE/qwen.log"
     if [ -f "$LOG" ]; then
       grep -oE "Using [A-Z_]+ attention backend" "$LOG" | tail -1 | sed 's/^/  INFO  /'
       grep -oE "GPU KV cache size: [0-9,]+ tokens" "$LOG" | tail -1 | sed 's/^/  INFO  /'
@@ -182,7 +189,7 @@ if [ $NOSRV = 0 ]; then
       grep -q "MarlinLinearKernel" "$LOG" && ok "Marlin kernels in use" || true
       grep -oE "capping max_num_seqs [0-9]+ -> [0-9]+" "$LOG" | tail -1 | sed 's/^/  INFO  KVarN /'
     fi
-  else warn "no server on :$PORT (start batch/start_qwen.sh or single-user/start_qwen.sh, or pass --no-server)"; fi
+  else warn "no server on :$PORT (start batch/start_ornith.sh or single-user/start_ornith.sh, or pass --no-server)"; fi
 fi
 echo
 [ $FAILS = 0 ] && echo "verify: OK ($FAILS failures)" || echo "verify: $FAILS FAILURE(S)"

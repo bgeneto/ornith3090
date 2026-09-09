@@ -68,10 +68,44 @@ for s in ("weight_packed", "weight_scale", "weight_shape"):
 json.dump(idx, open(d + "model.safetensors.index.json", "w"), indent=2)
 
 c = json.load(open(d + "config.json"))
-qc = c["quantization_config"]
-g2 = copy.deepcopy(qc["config_groups"]["group_1"])
-g2["targets"] = ["re:.*embed_tokens$"]
-g2["weights"]["num_bits"] = BITS
+qc = c.setdefault("quantization_config", {})
+if "config_groups" not in qc:
+    qc["config_groups"] = {}
+
+if "group_1" in qc["config_groups"]:
+    g2 = copy.deepcopy(qc["config_groups"]["group_1"])
+    g2["targets"] = ["re:.*embed_tokens$"]
+    g2["weights"]["num_bits"] = BITS
+elif "group_0" in qc["config_groups"]:
+    g2 = copy.deepcopy(qc["config_groups"]["group_0"])
+    g2["targets"] = ["re:.*embed_tokens$"]
+    g2["weights"]["num_bits"] = BITS
+    g2["weights"]["symmetric"] = True
+    g2["weights"]["zp_dtype"] = None
+else:
+    g2 = {
+        "format": "pack-quantized",
+        "input_activations": None,
+        "output_activations": None,
+        "targets": ["re:.*embed_tokens$"],
+        "weights": {
+            "actorder": None,
+            "block_structure": None,
+            "dynamic": False,
+            "group_size": GROUP,
+            "num_bits": BITS,
+            "observer": "memoryless_minmax",
+            "observer_kwargs": {},
+            "scale_dtype": None,
+            "strategy": "group",
+            "symmetric": True,
+            "type": "int",
+            "zp_dtype": None,
+        },
+    }
 qc["config_groups"]["group_2"] = g2
+if "extra_config" in qc and isinstance(qc["extra_config"], dict):
+    # record embed_tokens in extra_config as well
+    qc["extra_config"][key[:-len(".weight")]] = {"bits": BITS}
 json.dump(c, open(d + "config.json", "w"), indent=2)
 print("done")

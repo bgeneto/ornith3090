@@ -28,8 +28,8 @@ from compressed_tensors.compressors.pack_quantized.base import pack_to_int32
 GROUP = 128
 BITS = int(sys.argv[sys.argv.index("--bits") + 1]) if "--bits" in sys.argv else 8
 QMAX = 2 ** (BITS - 1) - 1
-KEEP_FC = "--keep-fc" in sys.argv
-MTP_LINEARS = ([] if KEEP_FC else ["mtp.fc"]) + [
+KEEP_FC = "--keep-fc" in sys.argv or "--quant-fc" not in sys.argv
+ALL_MTP_LINEARS = [
     "mtp.layers.0.mlp.down_proj",
     "mtp.layers.0.mlp.gate_proj",
     "mtp.layers.0.mlp.up_proj",
@@ -42,10 +42,34 @@ MTP_LINEARS = ([] if KEEP_FC else ["mtp.fc"]) + [
 d = sys.argv[1].rstrip("/") + "/"
 idx = json.load(open(d + "model.safetensors.index.json"))
 wm = idx["weight_map"]
+
+# Check if mtp.layers.0 is already quantized (e.g. Pilcothink MixedInt4 AutoRound)
+already_quant = any(
+    f"{m}.qweight" in wm or f"{m}.weight_packed" in wm
+    for m in ALL_MTP_LINEARS
+)
+
+MTP_LINEARS = []
+if not already_quant:
+    for m in ALL_MTP_LINEARS:
+        if f"{m}.weight" in wm:
+            MTP_LINEARS.append(m)
+else:
+    print("MTP decoder layer (mtp.layers.0.*) is already quantized in this checkpoint.")
+
+if "--quant-fc" in sys.argv and "mtp.fc.weight" in wm:
+    MTP_LINEARS.append("mtp.fc")
+elif "mtp.fc.weight" in wm and not already_quant and not KEEP_FC:
+    MTP_LINEARS.append("mtp.fc")
+
+if not MTP_LINEARS:
+    print("No unquantized MTP linears to quantize (mtp.fc kept at BF16). MTP ready.")
+    sys.exit(0)
+
 shards = {wm[m + ".weight"] for m in MTP_LINEARS}
 assert len(shards) == 1, f"mtp weights span several shards: {shards}"
 shard = shards.pop()
-print(f"mtp linears live in {shard}, quantizing to int{BITS} g{GROUP}")
+print(f"mtp linears live in {shard}, quantizing {len(MTP_LINEARS)} layers to int{BITS} g{GROUP}")
 
 tensors = {}
 with safe_open(d + shard, framework="pt") as f:
@@ -77,11 +101,40 @@ json.dump(idx, open(d + "model.safetensors.index.json", "w"), indent=2)
 
 c = json.load(open(d + "config.json"))
 shutil.copy(d + "config.json", d + "config.json.bak-mtp")
-qc = c["quantization_config"]
-qc["ignore"] = [i for i in qc["ignore"] if i not in MTP_LINEARS]
-g = copy.deepcopy(qc["config_groups"]["group_0"])
-g["targets"] = ["re:^mtp\\.layers\\..*"] if KEEP_FC else ["re:^mtp\\..*"]
-g["weights"]["num_bits"] = BITS
+qc = c.setdefault("quantization_config", {})
+if "ignore" in qc:
+    qc["ignore"] = [i for i in qc["ignore"] if i not in MTP_LINEARS]
+
+if "config_groups" not in qc:
+    qc["config_groups"] = {}
+
+if "group_0" in qc["config_groups"]:
+    g = copy.deepcopy(qc["config_groups"]["group_0"])
+    g["targets"] = ["re:^mtp\\.layers\\..*"] if KEEP_FC else ["re:^mtp\\..*"]
+    g["weights"]["num_bits"] = BITS
+    g["weights"]["symmetric"] = True
+    g["weights"]["zp_dtype"] = None
+else:
+    g = {
+        "format": "pack-quantized",
+        "input_activations": None,
+        "output_activations": None,
+        "targets": ["re:^mtp\\.layers\\..*"] if KEEP_FC else ["re:^mtp\\..*"],
+        "weights": {
+            "actorder": None,
+            "block_structure": None,
+            "dynamic": False,
+            "group_size": GROUP,
+            "num_bits": BITS,
+            "observer": "memoryless_minmax",
+            "observer_kwargs": {},
+            "scale_dtype": None,
+            "strategy": "group",
+            "symmetric": True,
+            "type": "int",
+            "zp_dtype": None,
+        },
+    }
 qc["config_groups"]["group_3"] = g
 json.dump(c, open(d + "config.json", "w"), indent=2)
 print("done")

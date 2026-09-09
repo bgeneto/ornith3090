@@ -27,10 +27,20 @@ import torch
 from safetensors import safe_open
 from safetensors.torch import save_file
 
-d = sys.argv[1].rstrip("/") + "/"
+d = sys.argv[1].rstrip("/") + "/" if len(sys.argv) > 1 else "models/Ornith-1.5-9B-MixedInt4-AutoRound/"
 N = int(sys.argv[sys.argv.index("--n") + 1]) if "--n" in sys.argv else 40960
 corpus = sys.argv[sys.argv.index("--corpus") + 1:] if "--corpus" in sys.argv else []
 ids_file = sys.argv[sys.argv.index("--ids") + 1] if "--ids" in sys.argv else None
+
+if not ids_file and not corpus:
+    # Check default shipped ids file if available
+    default_ids = os.path.join(os.path.dirname(__file__), "draft_vocab_ids.json")
+    if os.path.isfile(default_ids):
+        ids_file = default_ids
+        print(f"No corpus or --ids specified; using shipped default {ids_file}")
+    else:
+        print("Usage: python prepare/build_draft_vocab.py <model_dir> [--ids draft_vocab_ids.json] [--n 40960 --corpus file1 file2 ...]")
+        sys.exit(1)
 
 from transformers import AutoTokenizer
 tok = AutoTokenizer.from_pretrained(d)

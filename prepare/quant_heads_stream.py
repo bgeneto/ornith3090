@@ -177,30 +177,34 @@ for key in (lm_key, emb_key):
         wm[f"{base}.{s}"] = big
 
 # ---- MTP module (small shard, fits in RAM) ----
-mtp_shards = {wm[m + ".weight"] for m in MTP_LINEARS}
-assert len(mtp_shards) == 1, f"mtp weights span several shards: {mtp_shards}"
-mtp_shard = mtp_shards.pop()
-print(f"mtp linears live in {mtp_shard}, quantizing to int{MTP_BITS} g{GROUP}")
+unquant_mtp = [m for m in MTP_LINEARS if (m + ".weight") in wm]
+if unquant_mtp:
+    mtp_shards = {wm[m + ".weight"] for m in unquant_mtp}
+    assert len(mtp_shards) == 1, f"mtp weights span several shards: {mtp_shards}"
+    mtp_shard = mtp_shards.pop()
+    print(f"mtp linears live in {mtp_shard}, quantizing {len(unquant_mtp)} layers to int{MTP_BITS} g{GROUP}")
 
-tensors = {}
-with safe_open(d + mtp_shard, framework="pt") as f:
-    mtp_meta = f.metadata()
-    for k in f.keys():
-        tensors[k] = f.get_tensor(k)
-for m in MTP_LINEARS:
-    w = tensors.pop(m + ".weight")
-    out_f, in_f = w.shape
-    packed, scale, err = quantize(w, MTP_BITS)
-    print(f"  {m}: {(out_f, in_f)} round-trip rel error {err:.4f}")
-    tensors[m + ".weight_packed"] = packed
-    tensors[m + ".weight_scale"] = scale.to(torch.float16)
-    tensors[m + ".weight_shape"] = torch.tensor([out_f, in_f], dtype=torch.int64)
-    del wm[m + ".weight"]
-    for s in ("weight_packed", "weight_scale", "weight_shape"):
-        wm[f"{m}.{s}"] = mtp_shard
-os.replace(d + mtp_shard, d + mtp_shard + ".bak-orig")
-save_file(tensors, d + mtp_shard, metadata=mtp_meta or {"format": "pt"})
-del tensors
+    tensors = {}
+    with safe_open(d + mtp_shard, framework="pt") as f:
+        mtp_meta = f.metadata()
+        for k in f.keys():
+            tensors[k] = f.get_tensor(k)
+    for m in unquant_mtp:
+        w = tensors.pop(m + ".weight")
+        out_f, in_f = w.shape
+        packed, scale, err = quantize(w, MTP_BITS)
+        print(f"  {m}: {(out_f, in_f)} round-trip rel error {err:.4f}")
+        tensors[m + ".weight_packed"] = packed
+        tensors[m + ".weight_scale"] = scale.to(torch.float16)
+        tensors[m + ".weight_shape"] = torch.tensor([out_f, in_f], dtype=torch.int64)
+        del wm[m + ".weight"]
+        for s in ("weight_packed", "weight_scale", "weight_shape"):
+            wm[f"{m}.{s}"] = mtp_shard
+    os.replace(d + mtp_shard, d + mtp_shard + ".bak-orig")
+    save_file(tensors, d + mtp_shard, metadata=mtp_meta or {"format": "pt"})
+    del tensors
+else:
+    print("MTP linears already quantized or none selected to quantize.")
 
 json.dump(idx, open(idx_path, "w"), indent=2)
 
@@ -208,16 +212,39 @@ json.dump(idx, open(idx_path, "w"), indent=2)
 cfg_path = d + "config.json"
 c = json.load(open(cfg_path))
 json.dump(c, open(cfg_path + ".bak-quant", "w"), indent=2)
-qc = c["quantization_config"]
+qc = c.setdefault("quantization_config", {})
+if "config_groups" not in qc:
+    qc["config_groups"] = {}
 
 
 def group(bits, targets):
-    g = copy.deepcopy(qc["config_groups"]["group_0"])
+    if "group_0" in qc["config_groups"]:
+        g = copy.deepcopy(qc["config_groups"]["group_0"])
+        w = g["weights"]
+    else:
+        w = {
+            "actorder": None,
+            "block_structure": None,
+            "dynamic": False,
+            "group_size": GROUP,
+            "num_bits": bits,
+            "observer": "memoryless_minmax",
+            "observer_kwargs": {},
+            "scale_dtype": None,
+            "strategy": "group",
+            "symmetric": True,
+            "type": "int",
+            "zp_dtype": None,
+        }
+        g = {
+            "format": "pack-quantized",
+            "input_activations": None,
+            "output_activations": None,
+            "targets": targets,
+            "weights": w,
+        }
     g["targets"] = targets
-    w = g["weights"]
     w["num_bits"] = bits
-    # tensors written here are symmetric with no zero point, regardless of
-    # what the body group uses (AWQ bodies are asymmetric).
     w["symmetric"] = True
     w["zp_dtype"] = None
     w["group_size"] = GROUP
@@ -226,11 +253,13 @@ def group(bits, targets):
     return g
 
 
-qc["ignore"] = [i for i in qc["ignore"] if i != "lm_head" and i not in MTP_LINEARS]
+if "ignore" in qc:
+    qc["ignore"] = [i for i in qc["ignore"] if i != "lm_head" and i not in MTP_LINEARS]
 qc["config_groups"]["group_1"] = group(HEAD_BITS, ["re:.*lm_head$"])
 qc["config_groups"]["group_2"] = group(HEAD_BITS, ["re:.*embed_tokens$"])
-qc["config_groups"]["group_3"] = group(
-    MTP_BITS, ["re:^mtp\\.layers\\..*"] if KEEP_FC else ["re:^mtp\\..*"]
-)
+if unquant_mtp:
+    qc["config_groups"]["group_3"] = group(
+        MTP_BITS, ["re:^mtp\\.layers\\..*"] if KEEP_FC else ["re:^mtp\\..*"]
+    )
 json.dump(c, open(cfg_path, "w"), indent=2)
 print("done")

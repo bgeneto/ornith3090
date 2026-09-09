@@ -67,25 +67,55 @@ json.dump(idx, open(d + "model.safetensors.index.json", "w"), indent=2)
 
 c = json.load(open(d + "config.json"))
 shutil.copy(d + "config.json", d + "config.json.bak-quant")
-qc = c["quantization_config"]
-qc["ignore"] = [i for i in qc["ignore"] if i != "lm_head"]
-# The MTP draft head is stored in bf16 but missing from the ignore list, which
-# breaks loading when speculative decoding is enabled (single-user mode).
-for m in (
-    "mtp.fc",
-    "mtp.layers.0.mlp.down_proj",
-    "mtp.layers.0.mlp.gate_proj",
-    "mtp.layers.0.mlp.up_proj",
-    "mtp.layers.0.self_attn.q_proj",
-    "mtp.layers.0.self_attn.k_proj",
-    "mtp.layers.0.self_attn.v_proj",
-    "mtp.layers.0.self_attn.o_proj",
-):
-    if m not in qc["ignore"]:
-        qc["ignore"].append(m)
-g1 = copy.deepcopy(qc["config_groups"]["group_0"])
-g1["targets"] = ["re:.*lm_head$"]
-g1["weights"]["num_bits"] = BITS
+qc = c.setdefault("quantization_config", {})
+if "ignore" in qc:
+    qc["ignore"] = [i for i in qc["ignore"] if i != "lm_head"]
+    # The MTP draft head is stored in bf16 but missing from the ignore list in some checkpoints
+    for m in (
+        "mtp.fc",
+        "mtp.layers.0.mlp.down_proj",
+        "mtp.layers.0.mlp.gate_proj",
+        "mtp.layers.0.mlp.up_proj",
+        "mtp.layers.0.self_attn.q_proj",
+        "mtp.layers.0.self_attn.k_proj",
+        "mtp.layers.0.self_attn.v_proj",
+        "mtp.layers.0.self_attn.o_proj",
+    ):
+        if m not in qc["ignore"]:
+            qc["ignore"].append(m)
+
+if "config_groups" not in qc:
+    qc["config_groups"] = {}
+
+if "group_0" in qc["config_groups"]:
+    g1 = copy.deepcopy(qc["config_groups"]["group_0"])
+    g1["targets"] = ["re:.*lm_head$"]
+    g1["weights"]["num_bits"] = BITS
+    g1["weights"]["symmetric"] = True
+    g1["weights"]["zp_dtype"] = None
+else:
+    g1 = {
+        "format": "pack-quantized",
+        "input_activations": None,
+        "output_activations": None,
+        "targets": ["re:.*lm_head$"],
+        "weights": {
+            "actorder": None,
+            "block_structure": None,
+            "dynamic": False,
+            "group_size": GROUP,
+            "num_bits": BITS,
+            "observer": "memoryless_minmax",
+            "observer_kwargs": {},
+            "scale_dtype": None,
+            "strategy": "group",
+            "symmetric": True,
+            "type": "int",
+            "zp_dtype": None,
+        },
+    }
 qc["config_groups"]["group_1"] = g1
+if "extra_config" in qc and isinstance(qc["extra_config"], dict):
+    qc["extra_config"]["lm_head"] = {"bits": BITS}
 json.dump(c, open(d + "config.json", "w"), indent=2)
 print("done")
