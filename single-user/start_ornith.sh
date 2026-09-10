@@ -65,7 +65,8 @@ INT8_LAYERS=${INT8_LAYERS-mlp|linear_attn|self_attn}
 [ -n "$INT8_ACT" ] && export VLLM_MARLIN_INPUT_DTYPE=$INT8_ACT
 [ -n "$INT8_ACT" ] && [ -n "$INT8_LAYERS" ] && export VLLM_MARLIN_INT8_INCLUDE_RE=$INT8_LAYERS
 # PREFILL_ATTN=int8: int8-QK Triton attention for the 8 hd256 full-attention
-# layers during prefill (patches/triton-prefill-attn-int8.patch). Ornith is
+# layers during prefill (patches/triton-prefill-attn-int8.patch plus
+# triton-prefill-attn-ornith-heads.patch). Ornith is
 # 16q/4kv/256 (Qwen3.8-27B is 24q/4kv/256); the kernel takes G from hq//hkv.
 # Companion to INT8_ACT, not a standalone switch: without the int8 GEMMs,
 # attention is a smaller share of prefill and a WSL2 3090 measured the
