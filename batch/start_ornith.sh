@@ -11,6 +11,8 @@
 # Usage:
 #   bash batch/start_ornith.sh
 #   MAX_SEQS=32 KV=fp8 bash batch/start_ornith.sh
+#   KV=int8pth bash batch/start_ornith.sh
+#   ENABLE_THINKING=1 bash batch/start_ornith.sh
 
 set -euo pipefail
 
@@ -36,18 +38,29 @@ API_SERVERS=${API_SERVERS:-1}
 GPU_UTIL=${GPU_UTIL:-0.95}
 
 KV=${KV:-fp8}
-if [ "$KV" = "int4pth" ]; then
-  MAX_LEN=${MAX_LEN:-262144}
-  KV_ARGS="--kv-cache-dtype int4_per_token_head --attention-backend TRITON_ATTN"
-elif [ "$KV" = "kvarn" ]; then
-  MAX_LEN=${MAX_LEN:-262144}
-  KV_ARGS="--kv-cache-dtype kvarn_k4v2_g128 --block-size 128"
-  export KVARN_POOL_MEM_FRAC=${KVARN_POOL_MEM_FRAC:-0.25}
-else
-  # Default: fp8 KV via FlashInfer
-  MAX_LEN=${MAX_LEN:-150000}
-  KV_ARGS="--kv-cache-dtype fp8"
-fi
+case "$KV" in
+  int8pth)
+    MAX_LEN=${MAX_LEN:-150000}
+    KV_ARGS="--kv-cache-dtype int8_per_token_head --attention-backend TRITON_ATTN"
+    ;;
+  int4pth)
+    MAX_LEN=${MAX_LEN:-262144}
+    KV_ARGS="--kv-cache-dtype int4_per_token_head --attention-backend TRITON_ATTN"
+    ;;
+  kvarn)
+    MAX_LEN=${MAX_LEN:-262144}
+    KV_ARGS="--kv-cache-dtype kvarn_k4v2_g128 --block-size 128"
+    export KVARN_POOL_MEM_FRAC=${KVARN_POOL_MEM_FRAC:-0.25}
+    ;;
+  fp8)
+    MAX_LEN=${MAX_LEN:-150000}
+    KV_ARGS="--kv-cache-dtype fp8"
+    ;;
+  *)
+    echo "KV must be fp8, int8pth, int4pth, or kvarn (got: $KV)" >&2
+    exit 1
+    ;;
+esac
 
 # INT8 activations for Marlin W4A8 tensor-core execution
 INT8_ACT=${INT8_ACT-int8}
@@ -92,6 +105,25 @@ if [ "${TOOLS:-1}" = "1" ]; then
   TOOL_ARGS=(--enable-auto-tool-choice --tool-call-parser "$TOOL_PARSER")
 fi
 
+# Ornith was trained thinking-off. Default 0: template thinking off + greedy
+# 0.0/0.80/20. ENABLE_THINKING=1 turns thinking on (1.0/0.95/20). Per-request
+# chat_template_kwargs still override the server default.
+ENABLE_THINKING=${ENABLE_THINKING:-0}
+case "$ENABLE_THINKING" in
+  1|true|TRUE|yes|on) THINK_JSON=true ;;
+  0|false|FALSE|no|off|"") THINK_JSON=false ;;
+  *)
+    echo "ENABLE_THINKING must be 0 or 1 (got: $ENABLE_THINKING)" >&2
+    exit 1
+    ;;
+esac
+THINK_ARGS=(--default-chat-template-kwargs "{\"enable_thinking\": ${THINK_JSON}}")
+if [ "$THINK_JSON" = true ]; then
+  THINK_ARGS+=(--override-generation-config '{"temperature":1.0,"top_p":0.95,"top_k":20}')
+else
+  THINK_ARGS+=(--override-generation-config '{"temperature":0.0,"top_p":0.80,"top_k":20}')
+fi
+
 if [ "${VISION:-0}" = "1" ]; then
   VISION_ARGS='--limit-mm-per-prompt {"image":{"count":1}} --mm-processor-kwargs {"size":{"shortest_edge":65536,"longest_edge":2097152}}'
   [ "${VISION_OFFLOAD:-1}" = "1" ] && export VLLM_VISION_CPU_OFFLOAD_GB=${VLLM_VISION_CPU_OFFLOAD_GB:-1}
@@ -133,6 +165,7 @@ fi
 echo "Max Seqs:     $MAX_SEQS"
 echo "Context:      $MAX_LEN"
 echo "KV Cache:     $KV"
+echo "Thinking:     $THINK_JSON (ENABLE_THINKING=$ENABLE_THINKING)"
 echo "Sleep level:  $SLEEP_LEVEL"
 echo "=========================================="
 
@@ -150,6 +183,7 @@ exec bash "$REPO/docker/run_vllm.sh" venv/bin/vllm serve "$MODEL" \
   --max-num-batched-tokens 2048 \
   --reasoning-parser qwen3 \
   --enable-prompt-tokens-details \
+  "${THINK_ARGS[@]}" \
   "${TOOL_ARGS[@]}" \
   "${SLEEP_ARGS[@]}" \
   ${EXTRA_ARGS}

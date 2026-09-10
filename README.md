@@ -482,8 +482,10 @@ curl http://localhost:18020/v1/chat/completions \
        "chat_template_kwargs": {"enable_thinking": false}}'
 ```
 
-Ornith recommends temperature 0.7 / top_p 0.8 and top_k 20 for standard instruct, and 1.0 / 0.95
-with thinking enabled (the default).
+Ornith was trained thinking-off. The launchers default `ENABLE_THINKING=0`
+(`--default-chat-template-kwargs={"enable_thinking":false}` and greedy
+`0.0/0.80/20`). Set `ENABLE_THINKING=1` for thinking-on (`1.0/0.95/20`).
+Clients can still send `chat_template_kwargs` per request.
 
 Tool calling works over the same endpoint — send `tools` with `tool_choice:
 "auto"` and the reply carries `tool_calls`. Both launchers set

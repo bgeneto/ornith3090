@@ -100,7 +100,9 @@ above for what these caches cost a speculating single-user server:
 
 Reading: `int8_per_token_head` buys nothing over fp8 here (same byte per
 element, quality already neutral) and costs the Triton backend's long-context
-speed. `int4_per_token_head` is a genuine zero-install alternative to KVarN for
+speed. On Ornith, `KV=int8pth bash single-user/start_ornith.sh` (or batch)
+is the first-class switch: Triton + split-KV verify, MTP k=4, `MAX_LEN`
+150k. `SPEC=dflash2 CTX=long` already uses this cache. `int4_per_token_head` is a genuine zero-install alternative to KVarN for
 the 262k use case — it fits, passes the 240k needle, and keeps short-request
 throughput that KVarN's 2048-token blocks lose — at 2.3× the prefill time and
 1.5× the decode time at 100k, because vLLM's Triton attention is that much

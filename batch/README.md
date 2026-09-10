@@ -190,7 +190,8 @@ All overridable as env vars, defaults in the script:
 | var | default | notes |
 |---|---|---|
 | `PREFIX_CACHE` | 0 | 1 = reuse a shared prompt prefix across requests (see above): 13x on shared-prompt workloads, ~14% smaller KV pool |
-| `KV` | `fp8` | `kvarn` switches to the KVarN 4/2-bit KV cache (run `bash kvarn/install.sh` once): 262k context, ~2× the token pool, slower decode — see the main README's "262k context" section |
+| `KV` | `fp8` | `int8pth`: Triton int8 per-token-head (same bytes as fp8, FlashInfer-free). `int4pth`: int4 per-token-head, ~262k, slower prefill. `kvarn`: KVarN 4/2-bit KV (run `bash kvarn/install.sh` once): 262k context, ~2× the token pool, slower decode — see the main README's "262k context" section |
+| `ENABLE_THINKING` | `0` | `0`: thinking off + greedy `0.0/0.80/20`. `1`: thinking on (`1.0/0.95/20`) |
 | `INT8_ACT` | `int8` | int8 activations on the Marlin GEMMs (int8 tensor cores, weights stay int4). Empty string = plain W4A16 |
 | `INT8_LAYERS` | `mlp` | regex on the layer name that gets int8 activations. `gate_up` for the gentle variant, `.` for everything, or a hand-picked list from `bench/act_calib.py` |
 | `MAX_SEQS` | 64 | scheduler slots; with fp16 state ~70 short requests fit the page pool |

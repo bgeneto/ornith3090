@@ -675,8 +675,8 @@ Things that each cost us hours, in rough order of pain. Worth skimming before yo
     between flashinfer's workspace and the async-scheduling window as of this
     entry. If you hit it, the flashinfer-free fallback is the int8 tier:
     `SPEC=dflash2 CTX=long` ships it by default, and for `SPEC=mtp` it is
-    `VLLM_SPEC_DECODE_ATTN=1 EXTRA_ARGS="--attention-backend=TRITON_ATTN
-    --kv-cache-dtype=int8_per_token_head"`. Measured cost on the reference
+    `KV=int8pth bash single-user/start_ornith.sh` (Triton `int8_per_token_head`,
+    split-KV verify, k=4). Measured cost on the reference
     box: 17.9k in + 256 out takes 23.7 s against fp8/FlashInfer's 18.9
     (~25% wall at that depth, mostly Triton prefill); in exchange the same
     pinned pool holds more tokens at int8's geometry. The default stays

@@ -22,6 +22,8 @@
 #   bash single-user/start_ornith.sh
 #   PREFIX_CACHE=1 DRAFT_TOKENS=4 bash single-user/start_ornith.sh
 #   INT8_ACT=int8 bash single-user/start_ornith.sh   # prefill boost
+#   KV=int8pth bash single-user/start_ornith.sh    # Triton int8 KV, ~150k, k=4
+#   ENABLE_THINKING=1 bash single-user/start_ornith.sh
 #   SPEC=dflash2 bash single-user/start_ornith.sh   # after models/Ornith-1.5-9B-DFlash2-W4A16
 
 set -euo pipefail
@@ -50,10 +52,12 @@ MAX_SEQS=${MAX_SEQS:-8}
 API_SERVERS=${API_SERVERS:-1}
 CTX=${CTX:-fast}
 SPEC=${SPEC:-mtp}
+KV=${KV:-}
 EXTRA_ARGS=${EXTRA_ARGS:-}
-# Remember caller MAX_LEN: SPEC=dflash2 profiles pick their own default and must
-# not clobber an explicit MAX_LEN=8192 (same trap as start_qwen #25 item 13).
+# Remember caller MAX_LEN / DRAFT_TOKENS: later profiles pick their own default
+# and must not clobber an explicit MAX_LEN=8192 (same trap as start_qwen #25 item 13).
 USER_MAX_LEN=${MAX_LEN:-}
+USER_DRAFT_TOKENS=${DRAFT_TOKENS:-}
 
 # Prefill int8 activations (Marlin W4A8)
 INT8_ACT=${INT8_ACT-}
@@ -92,6 +96,46 @@ elif [ "$SPEC" = "dflash2" ] && [ "$CTX" != "fast" ]; then
   echo "SPEC=dflash2 supports CTX=fast (bf16), CTX=long (int8), CTX=huge (KVarN); CTX=$CTX keeps SPEC=mtp" >&2
   SPEC=mtp
 fi
+
+# KV=int8pth: Triton int8 per-token-head (FlashInfer-free long context). FA2 cannot
+# store quantized KV on sm86. Same bytes as fp8, ~2x the CTX=fast pool; split-KV
+# verify stays on so MTP can keep k=4 (CTX=long fp8/FlashInfer cannot).
+case "$KV" in
+  "") ;;
+  fp8)
+    if [ "$CTX" = "huge" ]; then
+      echo "[start_ornith] KV=fp8 is incompatible with CTX=huge (KVarN). Use CTX=long." >&2
+      exit 1
+    fi
+    ATTN_ARGS="--kv-cache-dtype fp8"
+    if [ -z "$USER_MAX_LEN" ] && [ "$SPEC" != "dflash2" ]; then
+      MAX_LEN=150000
+    fi
+    if [ "$SPEC" = "mtp" ] && [ -z "$USER_DRAFT_TOKENS" ]; then
+      DRAFT_TOKENS=3
+    fi
+    echo "[start_ornith] KV=fp8: FlashInfer fp8 KV, MAX_LEN=$MAX_LEN, drafts=$DRAFT_TOKENS"
+    ;;
+  int8pth)
+    if [ "$CTX" = "huge" ]; then
+      echo "[start_ornith] KV=int8pth is incompatible with CTX=huge (KVarN). Use CTX=long or CTX=fast." >&2
+      exit 1
+    fi
+    ATTN_ARGS="--attention-backend TRITON_ATTN --kv-cache-dtype int8_per_token_head"
+    export VLLM_SPEC_DECODE_ATTN=${SPEC_ATTN:-1}
+    if [ -z "$USER_MAX_LEN" ] && [ "$SPEC" != "dflash2" ]; then
+      MAX_LEN=150000
+    fi
+    if [ "$SPEC" = "mtp" ] && [ -z "$USER_DRAFT_TOKENS" ]; then
+      DRAFT_TOKENS=4
+    fi
+    echo "[start_ornith] KV=int8pth: Triton int8 per-token-head KV, split-KV verify on, MAX_LEN=$MAX_LEN"
+    ;;
+  *)
+    echo "KV must be empty (follow CTX), fp8, or int8pth (got: $KV)" >&2
+    exit 1
+    ;;
+esac
 
 if [ "$SPEC" = "mtp" ]; then
   SPEC_CFG="{\"method\":\"mtp\",\"num_speculative_tokens\":$DRAFT_TOKENS,\"draft_sample_method\":\"${DRAFT_SAMPLE:-probabilistic}\"}"
@@ -232,6 +276,25 @@ if [ "${TOOLS:-1}" = "1" ]; then
   TOOL_ARGS=(--enable-auto-tool-choice --tool-call-parser "$TOOL_PARSER")
 fi
 
+# Ornith was trained thinking-off. Default 0: template thinking off + greedy
+# 0.0/0.80/20. ENABLE_THINKING=1 turns thinking on (1.0/0.95/20). Per-request
+# chat_template_kwargs still override the server default.
+ENABLE_THINKING=${ENABLE_THINKING:-0}
+case "$ENABLE_THINKING" in
+  1|true|TRUE|yes|on) THINK_JSON=true ;;
+  0|false|FALSE|no|off|"") THINK_JSON=false ;;
+  *)
+    echo "ENABLE_THINKING must be 0 or 1 (got: $ENABLE_THINKING)" >&2
+    exit 1
+    ;;
+esac
+THINK_ARGS=(--default-chat-template-kwargs "{\"enable_thinking\": ${THINK_JSON}}")
+if [ "$THINK_JSON" = true ]; then
+  THINK_ARGS+=(--override-generation-config '{"temperature":1.0,"top_p":0.95,"top_k":20}')
+else
+  THINK_ARGS+=(--override-generation-config '{"temperature":0.0,"top_p":0.80,"top_k":20}')
+fi
+
 # Vision tower configuration
 # Ornith has 27 vision blocks; default to language model only for maximum speed/KV pool
 if [ "${VISION:-0}" = "1" ]; then
@@ -275,10 +338,11 @@ if [ "$SLEEP_LEVEL" = "1" ] || [ "$SLEEP_LEVEL" = "2" ]; then
 else
   echo "Port:         $PORT"
 fi
-echo "Context:      $MAX_LEN tokens (mode: $CTX)"
+echo "Context:      $MAX_LEN tokens (mode: $CTX${KV:+, KV=$KV})"
 echo "Speculation:  $SPEC (draft tokens: $DRAFT_TOKENS)"
 [ "$SPEC" = "dflash2" ] && echo "Drafter:      $DRAFT"
 echo "Prefix Cache: $PREFIX_CACHE"
+echo "Thinking:     $THINK_JSON (ENABLE_THINKING=$ENABLE_THINKING)"
 echo "GPU util:     $GPU_UTIL"
 echo "Sleep level:  $SLEEP_LEVEL"
 echo "==============================================="
@@ -299,6 +363,7 @@ exec bash "$REPO/docker/run_vllm.sh" venv/bin/vllm serve "$MODEL" \
   --compilation-config "{\"max_cudagraph_capture_size\":$CG,\"custom_ops\":[\"+rms_norm\",\"+silu_and_mul\"]}" \
   --reasoning-parser qwen3 \
   --enable-prompt-tokens-details \
+  "${THINK_ARGS[@]}" \
   "${TOOL_ARGS[@]}" \
   "${SLEEP_ARGS[@]}" \
   "${ASYNC_ARGS[@]}" \
