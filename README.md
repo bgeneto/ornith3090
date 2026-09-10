@@ -30,13 +30,13 @@ before exposing the server beyond this machine.
 | | `--profile batch` → [batch/](batch/) | `--profile single` → [single-user/](single-user/) |
 |---|---|---|
 | for | API backends, pipelines, many concurrent requests | one or a few people chatting, coding agents |
-| single-stream (C1) decode rate | ~90–120 tok/s stock | **~150–190+ tok/s** with native MTP $k=4$ + 40k draft vocab + INT8 `lm_head`/`embed_tokens` (potentially ~200+ tok/s on high-acceptance code) |
+| decode (Ornith-1.5-9B) | throughput-oriented, no speculation | **~201 tok/s** single-stream after 2k with `KV=int8pth` + INT8 activations (**~243 tok/s** aggregate / **~166 tok/s** per request at 2 streams); **~220 tok/s** prose / **300+ tok/s** coding on bf16 KV |
 | memory footprint | ~8.5 GB weights + FP16 GDN recurrent state | ~8.5 GB weights, leaving ~15.5 GB VRAM for extensive KV cache and CUDA graphs |
 | trick | 16-bit recurrent state + INT8 tensor-core GEMMs | Native MTP speculation ($k=3/4$), INT8 `lm_head` + `embed_tokens`, 40k-token draft vocabulary, split-KV verify attention, sort-free sampler, hybrid prefix caching |
 
 Both modes share one install — the mode is just which launch script you run.
-Speculation wins below ~8 concurrent users on short prompts, plain batching above.
-Numbers are on an RTX 3090 at a 250 W power limit.
+Speculation is the win for one or a few concurrent users; plain batching is the
+many-request path. Numbers are on an RTX 3090.
 
 The server listens on `0.0.0.0` and is unauthenticated unless you give it a key.
 For anything past your own machine, add one first — everything reads it from
@@ -85,7 +85,7 @@ SPEC=dflash2 PREFIX_CACHE=1 bash single-user/start_ornith.sh
 SPEC=dflash2 DFLASH_TOKENS=15 PREFIX_CACHE=1 bash single-user/start_ornith.sh
 ```
 
-Default single-user remains `SPEC=mtp` until C1 benches beat MTP k=4. On a 9B target the drafter is a larger fraction of step time than on 27B; chat C1 is a measurement, copy/quote (`LOOKUP=1`, `DFLASH_TOKENS=15`) is the likely win. Compare with `bash bench/dflash2_vs_mtp.sh`.
+Default single-user remains `SPEC=mtp` until single-stream benches beat MTP k=4. On a 9B target the drafter is a larger fraction of step time than on 27B; chat decode is a measurement, copy/quote (`LOOKUP=1`, `DFLASH_TOKENS=15`) is the likely win. Compare with `bash bench/dflash2_vs_mtp.sh`.
 
 Geometry (do not copy 27B numbers): hidden 4096, taps **1, 8, 15, 22, 29**, `fc` 20480→4096, `block_size` 8, `mask_token_id` **248077** (not 248070, which is `<|audio_start|>` in this tokenizer), `is_causal: false`. KV pool is sized from `GPU_UTIL` (Ornith weights ~8.5 GB); do not pin the 27B `KV_MEM=5.2GiB`. WSL2 still needs `VLLM_WSL2_ENABLE_PIN_MEMORY=1` (V2 runner UVA). `CTX=huge` + DFlash2 needs `bash kvarn/install.sh`.
 
@@ -216,10 +216,10 @@ NVLink**, 275 W). Those DFlash2 tok/s cells are not Ornith numbers; re-run
 `bench/run_benchmarks.sh single` here before planning TP=2:
 
 - **The DFlash2 residency ceiling is a 24 GB property, not a drafter
-  property.** On one card a 5-layer block drafter can collapse at C8
-  (recurrent-state pool exhaustion) while MTP still fits. On two cards the
-  extra pool usually flips that. Measure on Ornith before pointing everyone at
-  DFlash2.
+  property.** On one card a 5-layer block drafter can collapse at 8 concurrent
+  requests (recurrent-state pool exhaustion) while MTP still fits. On two
+  cards the extra pool usually flips that. Measure on Ornith before pointing
+  everyone at DFlash2.
 - **Do not pin `KV_MEM` under TP>1** unless you have profiled it: a single-card
   constant applied per worker strands memory. Export `KV_MEM` to pin anyway.
 - **Keep `DFLASH_TOKENS=7` at TP>1** until T=15 is measured on this 9B target.
@@ -233,45 +233,45 @@ single-card calibrations.
 
 ## Benchmarks
 
-Full tables per mode in [batch/README.md](batch/README.md) and
-[single-user/README.md](single-user/README.md); quality in
-[docs/quality.md](docs/quality.md). Reproduce any of it with
-`bash bench/run_benchmarks.sh batch|single` against your own server.
+Measured here on **Ornith-1.5-9B**, one RTX 3090, single-user profile. `ppN` is
+prompt processing of N tokens; `tg128` is 128 generated tokens after that prompt
+(the decode rate you feel once the KV is warm). Mean ± spread across repeats.
+Quality in [docs/quality.md](docs/quality.md).
 
-### vs. ninfer-3090
+C1–C8 cohort tables from the Qwen3.8-27B fork this repo was derived from do **not**
+apply to this 9B model and are not reproduced here.
 
-[ninfer-3090](https://github.com/Don-Chad/ninfer-3090) is a standalone C++/CUDA engine
-that publishes cohort benchmarks for this model on this card. Theirs are 1,024-token
-answers from 29-34-token prompts, greedy, MTP3, int8 KV, prefix reuse off, an
-8,192-token context window, and **thinking on** at `reasoning_effort=medium`, so their
-1,024 tokens include reasoning. Ours are 8 realistic chat prompts (English, Danish,
-code), 1,024-token answers, model-default sampling, thinking off:
+Config unless noted: `INT8_ACT=int8`, `PREFILL_ATTN=int8`, `KV=int8pth` (Triton
+int8 per-token-head KV). TTFR / e2e TTFT are time-to-first-token including engine
+overhead; est. PPT is the prompt-processing portion of that.
 
-| Cohort | ninfer-3090 (MTP3) | this repo, batch | single-user, MTP |
-|---|---|---|---|
-| C1 | 71.00 tok/s | 45.5 | **111.1** |
-| C2 | 90.66 tok/s | 86.3 | **191.8** |
-| C4 | 100.28 tok/s | 168.3 | **268.5** |
-| C8 | 165.33 tok/s | 324.9 | **407.3** |
-| C64 (128 in / 512 out) | not supported | **~1,035** | — |
+### Single stream
 
-`SPEC=dflash2` is not in this table until `bash bench/dflash2_vs_mtp.sh` has
-numbers from a trained Ornith-1.5-9B drafter. The Qwen3.8-27B DFlash2 C1 cells
-(121.8 / 195.5 / …) do not apply: that checkpoint cannot load here.
+| model | test | tok/s | peak tok/s | TTFR (ms) | est. PPT (ms) | e2e TTFT (ms) |
+|---|---|---:|---:|---:|---:|---:|
+| Ornith-1.5-9B | pp2048 | 4033.72 ± 72.79 | — | 520.36 ± 21.80 | 465.43 ± 21.80 | 520.36 ± 21.80 |
+| Ornith-1.5-9B | tg128 (after 2,048) | 201.38 ± 9.03 | 202.97 ± 9.08 | — | — | — |
+| Ornith-1.5-9B | pp8192 | 3300.44 ± 85.49 | — | 2328.44 ± 57.26 | 2273.52 ± 57.26 | 2328.44 ± 57.26 |
+| Ornith-1.5-9B | tg128 (after 8,192) | 157.84 ± 1.73 | 159.10 ± 1.75 | — | — | — |
 
-Decode rate, C × 1000 / mean TPOT. MTP columns were re-measured together
-on the current stack with `bench/run_benchmarks.sh`, keeping the second run after each
-restart as the script advises. Run-to-run spread on the same server is
-5-8%, so treat one-decimal differences as noise.
+Drop `KV=int8pth` and the cache stays bf16 (`CTX=fast`): about **220 tok/s** on
+creative / prose, and **300+ tok/s** on deterministic / coding. Int8 KV is the
+FlashInfer-free longer-context path, not a decode-speed win — generation falls as
+the cached prompt grows (~201 tok/s after 2k, ~158 tok/s after 8k).
 
-Theirs is the **decode** column of their table; their end-to-end column reads
-70.19 / 89.43 / 97.89 / 161.28, and an earlier version of this table quoted *those*
-against our decode rate, which was not like-for-like. What still is not like-for-like,
-in their favour and ours: their C1 is a single prompt in a single run with no error
-bars, thinking is on for them and off for us, and they publish no power limit or driver
-version — ours is an RTX 3090 pinned at 250 W. Peak VRAM is comparable (23.0 vs
-22.1 GiB at C8). The gap is mostly vLLM's continuous batching plus the memory this
-repo's requantization frees up.
+### Two concurrent streams
+
+Same knobs, two requests in flight. `tok/s (total)` is aggregate decode across both
+streams; `tok/s (req)` is per request. Prefill is a shared resource, so
+time-to-first-token is roughly 2× the single-stream figure. Aggregate decode rises
+(~243 tok/s after 2k) while per-request decode falls (~166 tok/s).
+
+| model | test | tok/s (total) | tok/s (req) | peak tok/s | peak tok/s (req) | TTFR (ms) | est. PPT (ms) | e2e TTFT (ms) |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| Ornith-1.5-9B | pp2048 (c2) | 3205.51 ± 219.04 | 2182.39 ± 644.57 | — | — | 985.01 ± 230.29 | 928.67 ± 230.29 | 985.01 ± 230.29 |
+| Ornith-1.5-9B | tg128 (c2, after 2,048) | 242.59 ± 41.44 | 166.27 ± 40.84 | 266.77 ± 29.14 | 173.33 ± 34.38 | — | — | — |
+| Ornith-1.5-9B | pp8192 (c2) | 2386.21 ± 179.53 | 1229.76 ± 97.01 | — | — | 6117.31 ± 515.00 | 6060.97 ± 515.00 | 6117.31 ± 515.00 |
+| Ornith-1.5-9B | tg128 (c2, after 8,192) | 193.46 ± 22.61 | 118.63 ± 21.65 | 245.67 ± 23.84 | 132.74 ± 15.95 | — | — | — |
 
 ### Quality
 
@@ -284,114 +284,20 @@ batch mode are the only knobs that trade accuracy for speed, and they cost
 0.9-3.7% perplexity depending on how far you push them. Per-configuration
 tables: [docs/quality.md](docs/quality.md).
 
-### Results from other hardware
-
-Community reproductions of the single-user headline number, harness runs first.
-`bench/run_benchmarks.sh single`, greedy, second run (the first reads low):
-
-**Set the power limit before you compare anything.** Every number in this repo
-is an RTX 3090 at 250 W, and on this card that is not a soft preference. A
-sustained-load ladder from [#62](https://github.com/syv-ai/qwen38-27b-rtx3090/issues/62)
-(14 minutes per cell, same service): 200 W gives 57.5 tok/s at 781 MHz, 250 W
-gives 85.6 at 978 MHz, and 280 W gives 86.7 — it hits 90 °C within two minutes,
-pins the fan at 100% and throttles back to the same throughput. Prefill loses
-about the same third at 200 W. So a quiet home box capped at 200 W is measuring
-its power cap rather than this stack, and nothing above 250 W is worth the
-noise.
-
-| card | power | C1 decode | notes | source |
-|---|---|---|---|---|
-| RTX 3090 (reference) | 250 W | 133 tok/s | pool 57,669 tok, ppl 8.09 | this README |
-| RTX 4090 | 450 W | **135.5 tok/s** | 27B-fork measurement (not Ornith); pool 57,669 and ppl 8.0921; no-spec control 60.3 | [#32](https://github.com/syv-ai/qwen38-27b-rtx3090/issues/32) |
-
-Measured with their own clients rather than the harness — comparable to each
-other only loosely, and not rows for the table above:
-
-- **CMP 170HX 40 GB (GA100, sm80)**: 133.7 tok/s median (3x900 tok, greedy) on
-  the shipped fast target — the first sm80 datapoint, level with the 3090 —
-  and 97.8 tok/s on their own w8a16 int8 target after the sm80 repack
-  workaround in [#27](https://github.com/syv-ai/qwen38-27b-rtx3090/issues/27)
-  (gotcha 41).
-- **RTX 5090 32 GB (sm120)**: ~410-449 tok/s on code and ~198 on prose at
-  `CTX=fast`, 500 W cap, roughly flat out to `CTX=huge` at 240k — different
-  prompts, output length and rate definition, so deliberately not in the table
-  (their own insistence, and correct). Setup gotchas and the full ladder:
-  [#35](https://github.com/syv-ai/qwen38-27b-rtx3090/issues/35).
-- **RTX 4090, Windows 11 / WSL2 (Docker path)**: reproduces with zero repo
-  changes; CTX ladder incl. huge's pool byte-identical to the 3090 reference
-  (268,169), concurrency ladder to N=8, and a measured both-ways case for
-  leaving the `KV_MEM` pin alone — [docs/wsl2-4090.md](docs/wsl2-4090.md).
-- **RTX 4090, Windows 11 / WSL2, second box**: all three single-user profiles
-  plus the experimental int4 one (230,830-token pool at 160k), and 135k
-  real-task numbers on the MTP + FP8 daily-driver profile — 62 tok/s decode on
-  QA over the document, TTFT 5.4 s → 0.33 s on a repeat turn. Also the
-  `nvidia-smi dmon` detector for WSL2 host-backed memory now in gotcha 43 —
-  [#61](https://github.com/syv-ai/qwen38-27b-rtx3090/issues/61).
-- **RTX 3090, Windows 11 / WSL2**: independent confirmation of the int8 prefill
-  stack on Ampere — `INT8_ACT=int8` +59%/+57%/+37% at 5k/21k/66k, the int8-QK
-  attention adding +1.8% at 21k and +6.3% at 66k on top, against this repo's
-  +2.7% at 16k and +5.3% at 51k. Plus the power-limit ladder quoted above —
-  [#62](https://github.com/syv-ai/qwen38-27b-rtx3090/issues/62).
-- **Dual-GPU reports**: the controlled 1-vs-2×3090 A/B in
-  [#40](https://github.com/syv-ai/qwen38-27b-rtx3090/issues/40) (+16–35%,
-  161.6 C1 greedy at 275 W, PCIe x8 without NVLink; independently reproduced
-  in-thread at 153.6/250 W by a second dual-3090 box), the NVLink dual 3090 in
-  [#7](https://github.com/syv-ai/qwen38-27b-rtx3090/issues/7), dual 5060 Ti in
-  [#22](https://github.com/syv-ai/qwen38-27b-rtx3090/issues/22). See "More
-  than one GPU" above for what transfers.
-
 ### Why this isn't just `vllm serve`
 
 Nine things, from requantizing both embedding matrices to drafting straight out
 of the prompt — one line each, then the reasoning and measurements, in
 [docs/optimizations.md](docs/optimizations.md).
 
-### What each step buys
-
-Measured cumulatively on the 3090, 64 concurrent, 128 in / 512 out, `vllm bench
-serve` random dataset:
-
-| step | what it does | e2e output tok/s | steady-state decode |
-|---|---|---|---|
-| W4A16 AutoRound body (as published) + fp8 KV | int4 Marlin kernels, 66.7k-token pool | 370 (48 conc, 256/256) | — |
-| + lm_head / embed_tokens int8 | 2.6 GB of cache pages back | 516 | ~585 (37 requests resident) |
-| + fp16 recurrent state | 64 requests resident, half the state traffic | 707 | ~830 |
-| + int8 activations, MLP (default) | int8 tensor cores on 74% of the FLOPs | 942 | ~1,094 |
-| + int8 activations, everything (`INT8_LAYERS=.`, needs `GPU_UTIL=0.95`) | | 1,042 | ~1,222 |
-
-And single-stream on realistic prompts (single-user mode, T = model default /
-greedy):
-
-| step | tok/s | tokens per step | draft acceptance, position 0 |
-|---|---|---|---|
-| no speculation | 46 / 46 | 1.0 | — |
-| MTP-2 as shipped (bf16 drafter, full head, fp32 state) | 66 / 79 | 2.1 / 2.4 | 65% / 80% |
-| MTP-4, int8 drafter, 40k draft head, fp16 state | 78 / 99 | 2.2 / 2.7 | 58% / 70% |
-| + probabilistic draft sampling (`CTX=fast`, k=4) | 90 / 98 | 2.6 / 2.7 | 69% / 70% |
-| same with 3 drafts on FlashInfer/fp8 KV (`CTX=long`, 150k) | 84 / 89 | 2.5 / 2.4 | 69% / 71% |
-| + sampler patch, split-KV verify attention | 93 / 99 | 2.6 / 2.6 | 69% / 70% |
-| + draft vocab counted over the model's own outputs | 107 / 109 | 2.9 / 2.9 | 74% / 74% |
-| + GPTQ-int4 lm_head (calibrated) | 109 / 112 | 2.8 / 2.8 | 73% / 73% |
-| + GPTQ-int4 MTP module (**fast variant, shipped**) | **~114 / 118-124** | 2.8 / 2.9-3.0 | 74% / 77% |
-
-Ornith DFlash2 (`SPEC=dflash2`) is **not** in this cumulative table. The 27B fork
-rows (118/126 C1, lookup 130–381 tok/s) were for a 64-layer / 5120-d target and
-must not be quoted as Ornith-1.5-9B. After `models/Ornith-1.5-9B-DFlash2-W4A16`
-exists, fill the cell with `bash bench/dflash2_vs_mtp.sh`. Keep MTP as default
-until C1 tok/step and tok/s beat `DRAFT_TOKENS=4`.
-
-(Steps 4-6 are the same 8-prompt protocol; greedy is deterministic for a
-given server and request order but differs between configs and even with
-prefix-cache hits, so single runs carry ±3-5% on tokens/step —
-`bench/run_benchmarks.sh single` reproduces 111.1 / 120.0 tok/s decode at C1,
-the best repeats read 119 / 124.)
-Going deeper (k=5) loses again: 106 / 105. k=4 is the knee, but on vLLM
-0.28.0's FlashInfer backend (needed for fp8 KV, i.e. for 150k context) four
-drafts crash the engine with an illegal memory access as soon as one request
-finishes while another is mid-generation — club-3090 reports the same "n=4
-eventually dies, n=3 stable" pattern — so `CTX=long` drafts 3 and gives up
-~7%; `CTX=fast` (FlashAttention, bf16 KV, ~64k context, the default) keeps k=4
-and is also the only backend the split-KV attention patch applies to.
+On vLLM 0.28.0's FlashInfer backend (needed for fp8 KV, i.e. for 150k context)
+four MTP drafts crash the engine with an illegal memory access as soon as one
+request finishes while another is mid-generation — club-3090 reports the same
+"n=4 eventually dies, n=3 stable" pattern — so `CTX=long` drafts 3; `CTX=fast`
+(FlashAttention, bf16 KV, ~64k context, the default) keeps k=4 and is also the
+only backend the split-KV attention patch applies to. Keep `SPEC=mtp` as the
+default until a trained Ornith DFlash2 checkpoint beats it on this 9B target
+(`bash bench/dflash2_vs_mtp.sh`).
 
 Two things that did *not* help, measured rather than assumed: fine-tuning the
 MTP head on the model's own outputs (KL halves, greedy top-1 on response
@@ -494,14 +400,12 @@ the parser has to read Ornith's XML call format (`<tool_call>...</tool_call>`),
 which is what this model's chat template emits. `TOOLS=0` turns it off.
 
 To check the numbers on your own card: `bash verify.sh` (also probes the live
-server and prints which attention backend and KV pool it came up with), then
-`bash bench/run_benchmarks.sh batch` or `... single` reproduces the tables
-above against the running server (`--prefill` and `--long` add the prefill
-matrix and the long-context rows), `bash bench/real_rep.sh <tag> 3 0` repeats
-the single-stream row, and `python bench/quality_battery.py <tag>` the
-perplexity / GSM8K rows. For the concurrency rows,
-`python bench/conc_ladder.py --n 1,2,4,8 --ctx-tokens 4096`; for the prompt-length
-bug, `python bench/residue_sweep.py <tag>` (all 128 residues) with
+server and prints which attention backend and KV pool it came up with). The
+Ornith-1.5-9B figures in [Benchmarks](#benchmarks) are the ones to compare against.
+`bash bench/run_benchmarks.sh batch` or `... single`, `bash bench/real_rep.sh
+<tag> 3 0`, and `python bench/quality_battery.py <tag>` still exist for local
+harness runs; `python bench/conc_ladder.py --n 1,2,4,8 --ctx-tokens 4096` for
+concurrency; `python bench/residue_sweep.py <tag>` (all 128 residues) with
 `python bench/verbatim.py` as its offline self-test.
 
 ## The rest
