@@ -51,7 +51,7 @@ wakes the engine. `SLEEP_LEVEL=0` disables this.
   `source docker/env.sh` then `bash drafter/train_dflash2.sh --smoke`.
 - Every start-script knob works from `.env`, which is passed straight into the
   container: `CTX=fast`, `DRAFT_TOKENS=4`, `PREFIX_CACHE=1`, `MAX_LEN=`,
-  `MAX_SEQS=`, `INT8_ACT=int8`, `KV=int8pth`, `ENABLE_THINKING=0`, `EXTRA_ARGS=...`. `PORT` (default 18020) is the
+  `MAX_SEQS=`, `INT8_ACT=int8`, `PREFILL_ATTN=int8`, `KV=int8pth`, `ENABLE_THINKING=0`, `EXTRA_ARGS=...`. `PORT` (default 18020) is the
   **host** publish port: compose maps `PORT:8000` because the idle proxy (or
   vLLM when `SLEEP_LEVEL=0`) listens on 8000 inside the container. `MODELS_DIR`
   (default `./models`, so a venv install and the container share one persistent

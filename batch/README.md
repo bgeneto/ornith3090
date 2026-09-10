@@ -193,7 +193,8 @@ All overridable as env vars, defaults in the script:
 | `KV` | `fp8` | `int8pth`: Triton int8 per-token-head (same bytes as fp8, FlashInfer-free). `int4pth`: int4 per-token-head, ~262k, slower prefill. `kvarn`: KVarN 4/2-bit KV (run `bash kvarn/install.sh` once): 262k context, ~2× the token pool, slower decode — see the main README's "262k context" section |
 | `ENABLE_THINKING` | `0` | `0`: thinking off + greedy `0.0/0.80/20`. `1`: thinking on (`1.0/0.95/20`) |
 | `INT8_ACT` | `int8` | int8 activations on the Marlin GEMMs (int8 tensor cores, weights stay int4). Empty string = plain W4A16 |
-| `INT8_LAYERS` | `mlp` | regex on the layer name that gets int8 activations. `gate_up` for the gentle variant, `.` for everything, or a hand-picked list from `bench/act_calib.py` |
+| `INT8_LAYERS` | `mlp\|linear_attn\|self_attn` | regex on the layer name that gets int8 activations. `gate_up` for the gentle variant, `.` for everything, or a hand-picked list from `bench/act_calib.py` |
+| `PREFILL_ATTN` | (off) | `int8`: int8-QK Triton prefill on the 8 hd256 full-attn layers. Pair with `INT8_ACT`. Empty = FA2. Quantized KV falls through |
 | `MAX_SEQS` | 64 | scheduler slots; with fp16 state ~70 short requests fit the page pool |
 | `MAX_LEN` | 150000 | max context. Raising it much past this fails startup, the pool can't hold a longer request |
 | `TOOLS` | 1 | tool/function calling (`--enable-auto-tool-choice --tool-call-parser`). `TOOL_PARSER` (`qwen3_coder`) must match the XML call format this model's chat template emits — `hermes` parses the JSON a Qwen model does *not* produce here, and fails silently. 0 = off, and `tool_choice: "auto"` then 400s |

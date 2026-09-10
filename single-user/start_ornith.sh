@@ -21,7 +21,7 @@
 # Usage:
 #   bash single-user/start_ornith.sh
 #   PREFIX_CACHE=1 DRAFT_TOKENS=4 bash single-user/start_ornith.sh
-#   INT8_ACT=int8 bash single-user/start_ornith.sh   # prefill boost
+#   INT8_ACT=int8 PREFILL_ATTN=int8 bash single-user/start_ornith.sh   # prefill boost
 #   KV=int8pth bash single-user/start_ornith.sh    # Triton int8 KV, ~150k, k=4
 #   ENABLE_THINKING=1 bash single-user/start_ornith.sh
 #   SPEC=dflash2 bash single-user/start_ornith.sh   # after models/Ornith-1.5-9B-DFlash2-W4A16
@@ -64,6 +64,17 @@ INT8_ACT=${INT8_ACT-}
 INT8_LAYERS=${INT8_LAYERS-mlp|linear_attn|self_attn}
 [ -n "$INT8_ACT" ] && export VLLM_MARLIN_INPUT_DTYPE=$INT8_ACT
 [ -n "$INT8_ACT" ] && [ -n "$INT8_LAYERS" ] && export VLLM_MARLIN_INT8_INCLUDE_RE=$INT8_LAYERS
+# PREFILL_ATTN=int8: int8-QK Triton attention for the 8 hd256 full-attention
+# layers during prefill (patches/triton-prefill-attn-int8.patch). Ornith is
+# 16q/4kv/256 (Qwen3.8-27B is 24q/4kv/256); the kernel takes G from hq//hkv.
+# Companion to INT8_ACT, not a standalone switch: without the int8 GEMMs,
+# attention is a smaller share of prefill and a WSL2 3090 measured the
+# standalone cell within a few percent either way (docs/optimizations.md).
+# Prefill-only; decode and split-KV verify keep FA2 / Triton. Quantized KV
+# (CTX=long, KV=int8pth, …) falls through. fp16 is the same kernel without
+# quantization (debug); empty keeps FA2.
+PREFILL_ATTN=${PREFILL_ATTN-}
+[ -n "$PREFILL_ATTN" ] && export VLLM_PREFILL_ATTN=$PREFILL_ATTN
 
 # Context & Attention settings
 if [ "$CTX" = "fast" ]; then

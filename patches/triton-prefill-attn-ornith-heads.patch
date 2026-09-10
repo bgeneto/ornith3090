@@ -1,0 +1,24 @@
+Open the int8-QK prefill-attn dispatch for Ornith-1.5-9B.
+
+patches/triton-prefill-attn-int8.patch gates the Triton kernel on Qwen3.8-27B
+geometry (24 q-heads / 4 kv-heads / D=256). Ornith-1.5-9B is the same D and
+Hkv with 16 q-heads (G=4). The kernel already takes G from hq//hkv; without
+this follow-up, PREFILL_ATTN=int8 is a silent FA2 no-op on Ornith.
+
+Apply AFTER triton-prefill-attn-int8.patch (this name sorts later).
+  patch -p1 -d venv/lib/python3.12/site-packages/vllm < patches/triton-prefill-attn-ornith-heads.patch
+
+--- a/v1/attention/backends/flash_attn.py
++++ b/v1/attention/backends/flash_attn.py
+@@ -1045,8 +1045,8 @@
+                 if (
+                     _os.environ.get("VLLM_PREFILL_ATTN", "") in ("int8", "fp16")
+                     and max_seqlen_q > 16
+                     and cu_seqlens_q.shape[0] == 2
+-                    and self.num_heads == 24 and self.num_kv_heads == 4
+-                    and self.head_size == 256
++                    and self.num_kv_heads == 4 and self.head_size == 256
++                    and self.num_heads in (16, 24)
+                     and not is_quantized_kv_cache(self.kv_cache_dtype)
+                     and (
+                         sliding_window_size is None

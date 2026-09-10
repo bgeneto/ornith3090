@@ -107,6 +107,11 @@ does. A WSL2 3090 measured the same standalone cell 1-6% negative
 top (1,826 / 1,491 against 1,793 / 1,427).
 Prefill-only by construction: the branch fires for single-request prefill
 chunks on the exact serving geometry and falls through to FA2 otherwise.
+Ornith-1.5-9B is 16 q-heads / 4 kv-heads / D=256 (8 full-attn layers, not 16);
+`patches/triton-prefill-attn-ornith-heads.patch` opens the 27B-only 24-head
+gate so `PREFILL_ATTN=int8` actually hits the kernel. Expect a smaller e2e %
+than the 27B table: fewer full-attn layers, and `start_ornith.sh` now exports
+`VLLM_PREFILL_ATTN` the same way `start_qwen.sh` does.
 
 Things this campaign measured that did NOT pay, so nobody re-walks them:
 

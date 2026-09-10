@@ -13,6 +13,7 @@
 #   MAX_SEQS=32 KV=fp8 bash batch/start_ornith.sh
 #   KV=int8pth bash batch/start_ornith.sh
 #   ENABLE_THINKING=1 bash batch/start_ornith.sh
+#   PREFILL_ATTN=int8 bash batch/start_ornith.sh   # int8-QK prefill attn (with INT8_ACT)
 
 set -euo pipefail
 
@@ -67,6 +68,11 @@ INT8_ACT=${INT8_ACT-int8}
 INT8_LAYERS=${INT8_LAYERS-mlp|linear_attn|self_attn}
 [ -n "$INT8_ACT" ] && export VLLM_MARLIN_INPUT_DTYPE=$INT8_ACT
 [ -n "$INT8_ACT" ] && [ -n "$INT8_LAYERS" ] && export VLLM_MARLIN_INT8_INCLUDE_RE=$INT8_LAYERS
+# PREFILL_ATTN=int8: int8-QK Triton prefill on the 8 hd256 full-attn layers
+# (16q/4kv). Same translation as single-user/start_ornith.sh. Empty = FA2.
+# Prefill-only; quantized KV falls through. Pair with INT8_ACT.
+PREFILL_ATTN=${PREFILL_ATTN-}
+[ -n "$PREFILL_ATTN" ] && export VLLM_PREFILL_ATTN=$PREFILL_ATTN
 
 EXTRA_ARGS=${EXTRA_ARGS:-}
 PREFIX_CACHE=${PREFIX_CACHE:-1}

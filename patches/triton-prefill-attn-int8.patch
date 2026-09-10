@@ -16,8 +16,9 @@ SageAttention-style, and keeps P.V in bf16:
   - Output accuracy: cos > 0.99999 against an fp32 reference at kv 4k-51k
     (FA2 itself measures 0.999997); end-to-end PPL/GSM8K gated before ship.
 
-Measured on the serving shapes (24 q-heads / 4 kv-heads, D=256, causal,
-2048-token chunk, paged bf16 KV, block 16), min-of-rounds:
+Measured on the 27B serving shapes (24 q-heads / 4 kv-heads, D=256, causal,
+2048-token chunk, paged bf16 KV, block 16), min-of-rounds. Ornith-1.5-9B is
+the same D/Hkv with 16 q-heads (G=4); the kernel takes G from hq//hkv.
 
   kv=4096   FA2 2.72 ms   this 2.14 ms   1.27x
   kv=16384  FA2 14.22 ms  this 10.91 ms  1.30x
@@ -32,6 +33,7 @@ keeps FA2). The branch fires only for single-request prefill chunks
 (max_seqlen_q > 16, one request in the varlen batch) on the exact serving
 geometry, with bf16 KV, causal, and no window/softcap/alibi/sinks — anything
 else falls through to FA2. Decode and the split-KV verify path are untouched.
+The dispatch accepts 16 or 24 q-heads (Ornith-1.5-9B / Qwen3.8-27B).
 
 Apply from the installed vllm package directory, AFTER spec-decode-attn.patch:
 its flash_attn.py hunk inserts immediately before that patch's split-KV block

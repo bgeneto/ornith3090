@@ -8,7 +8,8 @@
 #
 # Knobs go in a .env file next to this file: VLLM_API_KEY=...,
 # and any of the start-script variables (CTX, KV, MAX_LEN, MAX_SEQS, GPU_UTIL,
-# DRAFT_TOKENS, SERVED_MODEL_NAME, SLEEP_LEVEL, ENABLE_THINKING, EXTRA_ARGS, ...) — .env is passed straight
+# DRAFT_TOKENS, SERVED_MODEL_NAME, SLEEP_LEVEL, ENABLE_THINKING, PREFILL_ATTN,
+# EXTRA_ARGS, ...) — .env is passed straight
 # into the container.
 #
 # PORT is the host publish port only. The idle proxy always listens on 8000
