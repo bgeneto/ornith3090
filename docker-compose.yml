@@ -5,6 +5,7 @@
 #   docker compose --profile batch  up -d     # throughput
 #   docker compose run --rm prepare           # download + requantize Ornith-1.5-9B
 #   docker compose --profile train run --rm train --smoke  # DFlash2 (stop single first)
+#     (`--smoke` replaces compose command: train; the entrypoint maps that to training)
 #
 # Knobs go in a .env file next to this file: VLLM_API_KEY=...,
 # and any of the start-script variables (CTX, KV, MAX_LEN, MAX_SEQS, GPU_UTIL,

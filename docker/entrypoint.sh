@@ -15,6 +15,13 @@ set -e
 cd /app
 export PATH="/app/docker/bin:/app/venv/bin:$PATH"
 cmd=${1:-single}; shift || true
+# `docker compose run train --smoke` *replaces* compose `command: train` with
+# `--smoke`. A leading dash is a train flag, not a binary named "--smoke"
+# (`exec --smoke` is what printed "exec: --: invalid option").
+if [ "${cmd#-}" != "$cmd" ]; then
+  set -- "$cmd" "$@"
+  cmd=train
+fi
 case "$cmd" in
   single|batch)
     if [ "${PREPARE:-1}" != "0" ]; then
@@ -45,5 +52,5 @@ case "$cmd" in
     fi
     exec bash drafter/train_dflash2.sh "$@"
     ;;
-  *)       exec "$cmd" "$@" ;;
+  *)       exec -- "$cmd" "$@" ;;
 esac
